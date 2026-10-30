@@ -41,7 +41,7 @@ def series_state(connection, columns):
             }
     return books
 
-def unrelated_hashes(connection, ids, columns):
+def unrelated_hashes(connection, ids, columns, comment_ids=()):
     """Series semantics are checked separately for every book, not just targets."""
     series_tables = {"series", "books_series_link"}
     for column in columns.values():
@@ -59,6 +59,10 @@ def unrelated_hashes(connection, ids, columns):
         for raw in connection.execute("SELECT * FROM " + quoted):
             row = dict(raw)
             if table == "sqlite_sequence" and row.get("name") in series_tables:
+                continue
+            if table == "sqlite_sequence" and comment_ids and row.get("name") == "comments":
+                continue
+            if table == "comments" and row.get("book") in comment_ids:
                 continue
             if table == "books" and row["id"] in ids:
                 row.pop("series_index")
@@ -155,6 +159,14 @@ def validate(operation, current):
     if not changes or len(ids) != len(changes):
         raise ValueError("Empty changes or duplicate book IDs")
     for entry in changes:
+        field = operation.get("metadata_field", "series")
+        if field not in ("series", "comments"):
+            raise ValueError("Unknown metadata operation field")
+        if field == "comments":
+            if entry["before"] != entry["after"] or entry.get("comments") is None:
+                raise ValueError("Comments operations must preserve all hierarchy fields")
+        elif entry.get("comments") is not None:
+            raise ValueError("Series operations cannot contain Comments edits")
         book = current.get(entry["id"])
         if book is None or (book["uuid"], book["title"]) != (entry["uuid"], entry["title"]):
             raise ValueError(f"Stale book identity: {entry['id']}")
@@ -184,26 +196,63 @@ def validate(operation, current):
     return expected, ids
 
 
-def fingerprint(database, library, columns, ids):
+def comments_state(connection):
+    return {row["book"]: row["text"] for row in connection.execute("SELECT book,text FROM comments")}
+
+
+def validate_comments(operation, comments):
+    expected = dict(comments)
+    for entry in operation["changes"]:
+        edit = entry["comments"]
+        if set(edit) != {"before", "after"}:
+            raise ValueError("Comments edit requires explicit before/after")
+        if comments.get(entry["id"]) != edit["before"]:
+            raise ValueError("Stale Comments value")
+        if operation["kind"] not in ("undo", "recover"):
+            if edit["before"] is not None and str(edit["before"]).strip():
+                raise ValueError("Existing Comments are protected; overwrite refused")
+            if not isinstance(edit["after"], str) or not edit["after"].strip():
+                raise ValueError("Synopsis apply requires nonempty Comments")
+        if edit["after"] is not None and (not isinstance(edit["after"], str) or len(edit["after"]) > 32000):
+            raise ValueError("Invalid Comments target")
+        if edit["after"] is None:
+            expected.pop(entry["id"], None)
+        else:
+            expected[entry["id"]] = edit["after"]
+    return expected
+
+
+def verify_comments_opf(path, expected):
+    node = ET.parse(path).getroot().find(".//{http://purl.org/dc/elements/1.1/}description")
+    actual = "".join(node.itertext()) if node is not None else None
+    if actual != expected:
+        raise RuntimeError("Synopsis OPF description mismatch")
+
+
+def fingerprint(database, library, columns, ids, comment_ids=()):
     with read_database(database) as connection:
         books = series_state(connection, columns)
         modified = {
             str(book_id): connection.execute("SELECT last_modified FROM books WHERE id=?", (book_id,)).fetchone()[0]
             for book_id in ids
         }
-        return {
-            "books": books, "unrelated": unrelated_hashes(connection, ids, columns),
+        result = {
+            "books": books, "unrelated": unrelated_hashes(connection, ids, columns, comment_ids),
             "categories": category_payloads(connection, columns), "modified": modified,
             "opf": {str(book_id): (
                 hashlib.sha256(safe_opf(library, books[book_id]).read_bytes()).hexdigest()
                 if safe_opf(library, books[book_id]).exists() else None
             ) for book_id in ids},
         }
+        if comment_ids:
+            result["comments"] = comments_state(connection)
+        return result
 
 
 def execute(journal):
     global API_FIELDS
     operation = json.loads(journal.read_text())
+    comment_mode = operation.get("metadata_field", "series") == "comments"
     folder = journal.parent
     library = pathlib.Path(operation["library"]).resolve(strict=True)
     if folder.is_relative_to(library):
@@ -238,6 +287,8 @@ def execute(journal):
         with read_database(database) as connection:
             current = series_state(connection, columns)
             expected, ids = validate(operation, current)
+            comment_ids = ids if comment_mode else set()
+            expected_comments = validate_comments(operation, comments_state(connection)) if comment_mode else None
             for entry in operation["changes"]:
                 authors = [row[0] for row in connection.execute(
                     "SELECT a.name FROM books_authors_link l JOIN authors a ON a.id=l.author "
@@ -256,16 +307,27 @@ def execute(journal):
             previous = json.loads((parent / "operation.json").read_text())
             if previous["library"] != str(library) or previous["columns"] != labels:
                 raise ValueError("Recovery library/columns do not match")
+            if previous.get("metadata_field", "series") != operation.get("metadata_field", "series"):
+                raise ValueError("Recovery metadata field does not match")
             original_ids = {entry["id"] for entry in previous["changes"]}
             if ids != original_ids:
                 raise ValueError("Recovery must account for every original target")
             if json.loads(guard.read_text()) != json.loads(json.dumps(
-                    fingerprint(database, library, columns, ids))):
+                    fingerprint(database, library, columns, ids, comment_ids))):
                 raise ValueError("Intervening edits or an uncheckpointed write: guarded reversal refused")
             with read_database(parent / "backup" / "metadata.db") as connection:
-                if unrelated_hashes(connection, ids, columns) != fingerprint(
-                        database, library, columns, ids)["unrelated"]:
+                if unrelated_hashes(connection, ids, columns, comment_ids) != fingerprint(
+                        database, library, columns, ids, comment_ids)["unrelated"]:
                     raise ValueError("Unrelated metadata changed since the original operation")
+            originals = {entry["id"]: entry for entry in previous["changes"]}
+            for entry in operation["changes"]:
+                if comment_mode:
+                    target = originals[entry["id"]]["comments"]["before"]
+                    target = None if isinstance(target, str) and not target.strip() else target
+                    if entry["comments"]["after"] != target:
+                        raise ValueError("Reversal must restore the original Comments")
+                elif entry["after"] != originals[entry["id"]]["before"]:
+                    raise ValueError("Reversal must restore the original hierarchy")
         backup = folder / "backup"
         backup.mkdir(exist_ok=False)
         original_opf = backup / "original-opf"
@@ -278,26 +340,36 @@ def execute(journal):
             if path.exists():
                 shutil.copy2(path, original_opf / f"{book_id}.opf")
         operation["backup"] = str(backup)
-        baseline = fingerprint(database, library, columns, ids)
+        baseline = fingerprint(database, library, columns, ids, comment_ids)
         def checkpoint():
-            atomic(folder / "guard.json", fingerprint(database, library, columns, ids))
+            atomic(folder / "guard.json", fingerprint(database, library, columns, ids, comment_ids))
         checkpoint()
         phase("backed_up")
         targets = {entry["id"]: mapped(entry["after"]) for entry in operation["changes"]}
         phase("writing")
-        write_fields(db.new_api, targets, checkpoint)
+        if comment_mode:
+            db.new_api.set_field("comments", {entry["id"]: entry["comments"]["after"] for entry in operation["changes"]})
+            checkpoint()
+        else:
+            write_fields(db.new_api, targets, checkpoint)
         for completed, book_id in enumerate(sorted(ids), 1):
             db.new_api.dump_metadata(book_ids={book_id})
             checkpoint()
             verify_opf(safe_opf(library, current[book_id]), targets[book_id])
+            if comment_mode:
+                verify_comments_opf(safe_opf(library, current[book_id]), expected_comments.get(book_id))
             print("CURATOR_PROGRESS:" + json.dumps({"phase": "opf", "completed": completed,
                                                    "total": len(ids)}), flush=True)
         phase("verifying")
-        actual = fingerprint(database, library, columns, ids)
+        actual = fingerprint(database, library, columns, ids, comment_ids)
         if actual["books"] != expected:
             raise RuntimeError("Whole-library hierarchy or identity changed unexpectedly")
         if actual["unrelated"] != baseline["unrelated"]:
             raise RuntimeError("Unrelated metadata changed")
+        if comment_mode and actual["comments"] != expected_comments:
+            raise RuntimeError("Target/non-target Comments verification failed")
+        if comment_mode and actual["categories"] != baseline["categories"]:
+            raise RuntimeError("Series category metadata changed during synopsis apply")
         for table, names in baseline["categories"].items():
             for name, payload in names.items():
                 value = actual["categories"][table].get(name)
@@ -312,6 +384,8 @@ def execute(journal):
             "integrity": "ok", "all_book_series_checked": len(current),
             "unrelated_metadata_unchanged": True, "protected_fields_preserved": True,
             "opf_verified": len(ids),
+            "all_book_comments_checked": len(current) if comment_mode else 0,
+            "metadata_field": operation.get("metadata_field", "series"),
         }
         checkpoint()
         phase("verified")

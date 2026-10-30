@@ -53,6 +53,47 @@ async fn dispatch(
             };
             match action.as_str() {
                 "snapshot" => {}
+                "metadata_settings" => app
+                    .configure_metadata(
+                        serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "metadata_discover" => app.discover_metadata().map_err(|e| e.to_string())?,
+                "metadata_lookup" => app
+                    .lookup_metadata(
+                        payload["book_id"].as_i64().ok_or("Choose a book")?,
+                        payload["refresh"].as_bool().unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())?,
+                "metadata_confirm" => app
+                    .confirm_metadata(
+                        string("id")?,
+                        payload["confirmed"]
+                            .as_bool()
+                            .ok_or("Confirmation required")?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "synopsis_generate" => app
+                    .generate_synopsis(
+                        string("id")?,
+                        payload["ollama"].as_bool().unwrap_or(false),
+                        payload["refresh"].as_bool().unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())?,
+                "synopsis_save" => app
+                    .save_synopsis(
+                        string("id")?,
+                        string("text")?,
+                        payload["approved"].as_bool().ok_or("Approval required")?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "synopsis_apply" => {
+                    app.apply_synopses(
+                        &serde_json::from_value::<Vec<String>>(payload.clone())
+                            .map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
                 "ai_settings" => app
                     .configure_ai(
                         serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?,

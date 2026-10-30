@@ -18,6 +18,132 @@ fn command(script: &str, library: &Path) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn synopsis_comments_roundtrip_recovery_and_existing_protection() {
+    use curator_core::metadata::MetadataSettings;
+    use std::os::unix::fs::PermissionsExt;
+    if !Path::new("/usr/bin/calibre-debug").is_file() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let library = temp.path().join("library");
+    std::fs::create_dir(&library).unwrap();
+    command(include_str!("../../../tests/fixture.py"), &library);
+    command("import os; from calibre.db.legacy import LibraryDatabase; db=LibraryDatabase(os.environ['CURATOR_TEST_LIBRARY']); db.new_api.set_field('comments',{4:None}); db.new_api.dump_metadata(book_ids={4}); db.close()",&library);
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/bridge.py");
+    let namespace = format!("synopsis-test-{}", new_id());
+    let source=format!("import sys,json,pathlib\nif pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())['library']).resolve()!=pathlib.Path({:?}).resolve():\n    raise RuntimeError('Not the disposable library')\nimport calibre.utils.lock as test_lock\ntest_lock.__appname__={:?}\n{}",
+        library.to_string_lossy(),namespace,std::fs::read_to_string(&bridge).unwrap());
+    let isolated = temp.path().join("isolated-bridge.py");
+    std::fs::write(&isolated, &source).unwrap();
+    let debug = temp.path().join("calibre-debug");
+    std::fs::write(&debug,"#!/usr/bin/python3\nimport sys,os\nif '-c' in sys.argv:\n print('CURATOR_PLUGINS:[{\"name\":\"Fixture\",\"version\":\"1\",\"identify\":true,\"enabled\":true}]')\nelse:\n os.execv('/usr/bin/calibre-debug',['/usr/bin/calibre-debug']+sys.argv[1:])\n").unwrap();
+    std::fs::set_permissions(&debug, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let fetch = temp.path().join("fetch-ebook-metadata");
+    let xml="<package xmlns=\"http://www.idpf.org/2007/opf\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><metadata><dc:title>Ungrouped</dc:title><dc:creator>Test Author</dc:creator><dc:description>A botanist investigates dying gardens on an isolated island. Working with a local gardener, she traces the damage to a blocked stream while a storm threatens the village.</dc:description></metadata></package>";
+    std::fs::write(&fetch, format!("#!/usr/bin/python3\nprint({xml:?})\n")).unwrap();
+    std::fs::set_permissions(&fetch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut app = App::open(&temp.path().join("workspace"), isolated.clone()).unwrap();
+    app.settings(Settings {
+        library: library.to_string_lossy().into(),
+        calibre_binary: debug.to_string_lossy().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let hierarchy: Vec<_> = app
+        .scan
+        .as_ref()
+        .unwrap()
+        .books
+        .iter()
+        .map(|b| (b.id, b.hierarchy.clone()))
+        .collect();
+    app.configure_metadata(MetadataSettings {
+        fetch_binary: fetch.to_string_lossy().into(),
+        providers: vec!["Fixture".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    app.lookup_metadata(4, false).unwrap();
+    let lookup = app.data.metadata_results[0].id.clone();
+    app.confirm_metadata(&lookup, true).unwrap();
+    app.generate_synopsis(&lookup, false, false).unwrap();
+    let draft = app.data.synopsis_drafts[0].clone();
+    assert!(app.apply_synopses(std::slice::from_ref(&draft.id)).is_err());
+    app.save_synopsis(&draft.id, &draft.text, true).unwrap();
+    let operation = app.apply_synopses(std::slice::from_ref(&draft.id)).unwrap();
+    assert_eq!(operation.metadata_field, "comments");
+    assert_eq!(operation.phase, "verified");
+    assert_eq!(
+        operation.verification.as_ref().unwrap()["all_book_comments_checked"],
+        4
+    );
+    assert_eq!(
+        hierarchy,
+        app.scan
+            .as_ref()
+            .unwrap()
+            .books
+            .iter()
+            .map(|b| (b.id, b.hierarchy.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(curator_core::library::comments(&app.data.settings, 4)
+        .unwrap()
+        .unwrap()
+        .contains("botanist"));
+    assert_eq!(
+        curator_core::library::comments(&app.data.settings, 1)
+            .unwrap()
+            .as_deref(),
+        Some("<p>Keep synopsis.</p>")
+    );
+    assert!(app.generate_synopsis(&lookup, false, false).is_err());
+    app.reverse(&operation.id).unwrap();
+    assert_eq!(
+        curator_core::library::comments(&app.data.settings, 4).unwrap(),
+        None
+    );
+    assert_eq!(app.data.synopsis_drafts[0].state, "undone");
+    app.generate_synopsis(&lookup, false, false).unwrap();
+    let draft = app.data.synopsis_drafts[0].clone();
+    app.save_synopsis(&draft.id, &draft.text, true).unwrap();
+    let broken = temp.path().join("interrupted-synopsis.py");
+    let needle = "            checkpoint()\n        else:\n            write_fields";
+    assert!(source.contains(needle));
+    std::fs::write(&broken,source.replace(needle,"            checkpoint()\n            import os\n            os._exit(77)\n        else:\n            write_fields")).unwrap();
+    app.bridge = broken;
+    assert!(app.apply_synopses(std::slice::from_ref(&draft.id)).is_err());
+    let interrupted = app
+        .history()
+        .unwrap()
+        .into_iter()
+        .find(|o| o.phase == "writing")
+        .unwrap();
+    app.bridge = isolated;
+    app.reverse(&interrupted.id).unwrap();
+    assert_eq!(
+        curator_core::library::comments(&app.data.settings, 4).unwrap(),
+        None
+    );
+    app.generate_synopsis(&lookup, false, false).unwrap();
+    let draft = app.data.synopsis_drafts[0].clone();
+    app.save_synopsis(&draft.id, &draft.text, true).unwrap();
+    let last = app.apply_synopses(std::slice::from_ref(&draft.id)).unwrap();
+    command("import os; from calibre.db.legacy import LibraryDatabase; db=LibraryDatabase(os.environ['CURATOR_TEST_LIBRARY']); db.new_api.set_field('comments',{4:'Intervening synopsis edit'}); db.close()",&library);
+    assert!(app
+        .reverse(&last.id)
+        .unwrap_err()
+        .to_string()
+        .contains("Intervening"));
+    assert_eq!(
+        curator_core::library::comments(&app.data.settings, 4)
+            .unwrap()
+            .as_deref(),
+        Some("Intervening synopsis edit")
+    );
+}
 fn request(app: &App, id: i64) -> Change {
     let p = app
         .snapshot()
@@ -36,6 +162,7 @@ fn request(app: &App, id: i64) -> Change {
         identifiers: p.book.identifiers,
         evidence: String::new(),
         sources: Vec::new(),
+        comments: None,
     }
 }
 

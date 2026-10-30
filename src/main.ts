@@ -6,6 +6,14 @@ import "./style.css";
 type Series = { name: string | null; index: number | null };
 type Hierarchy = [Series, Series, Series, Series];
 type Citation={segment:number;quote:string};
+type Provider={name:string;version:string;identify:boolean;enabled:boolean};
+type MetadataSettings={fetch_binary:string;providers:string[];timeout_seconds:number;cache_days:number};
+type LookupResult={id:string;library:string;book_id:number;book_uuid:string;provider:Provider;fetched_at:number;cached:boolean;
+  match_status:string;note:string;identity_confirmed:boolean;source_id:string|null;
+  metadata:{title:string;authors:string[];identifiers:Record<string,string>;publisher:string|null;description:string;url:string|null}|null};
+type SynopsisDraft={id:string;lookup_id:string;library:string;book_id:number;book_uuid:string;title:string;source_id:string;source_hash:string;
+  text:string;notes:string;citations:Citation[];model:string;digest:string;prompt_version:string;generated_at:number;cached:boolean;
+  prompt_tokens:number;output_tokens:number;approved:boolean;state:string;operation_id:string|null};
 type AiSettings={enabled:boolean;endpoint:string;model:string;allow_lan:boolean;timeout_seconds:number};
 type AiCandidate={title:string;authors:string[];edition:string;notes:string;citations:Citation[];
   fields:{slot:number;name:string;index:number|null;citations:Citation[]}[]};
@@ -22,24 +30,28 @@ type Source = { id:string; name:string; location:string; sha256:string; kind:str
   segments:{ordinal:number;kind:string;text:string}[] };
 type Proposal = { book:Book; status:string; reason:string; reference_id:string|null;
   after:Hierarchy|null; changed:number[]; blocked:boolean; pinned:boolean[] };
-type Operation = { id:string; created:number; library:string; phase:string; kind:string;
+type Operation = { id:string; created:number; library:string; phase:string; kind:string;metadata_field?:string;
   backup:string|null; error:string|null; changes:unknown[]; verification:unknown };
 type Settings = { library:string; columns:[string,string,string]; calibre_binary:string };
 type Alias = { id:string; existing_series:string; universe:string };
 type Snapshot = { workspace:string; data:{settings:Settings; references:Reference[]; sources:Source[];aliases:Alias[];
   ai_settings:AiSettings;ai_models:{name:string;digest:string;size:number;usable:boolean;reason:string}[];
-  ai_runs:AiRun[];ai_decisions:Record<string,{status:string;reference_id:string|null}>};
+  ai_runs:AiRun[];ai_decisions:Record<string,{status:string;reference_id:string|null}>;
+  metadata_settings:MetadataSettings;metadata_providers:Provider[];metadata_results:LookupResult[];synopsis_drafts:SynopsisDraft[]};
   proposals:Proposal[]; history:Operation[]; issues:Record<string,string> };
 
 let state:Snapshot;
 let tab="Library", busy=false, query="", status="", page=0;
 let universeFilter:string|null=null;
 let aiSelection={source_id:"",start:1,end:1,universe:""};
+let synopsisBook=0;
+const synopsisSelected=new Set<string>();
 const selected=new Map<number,Set<number>>();
 const root=document.querySelector<HTMLDivElement>("#app")!;
 const heading=document.createElement("header"), nav=document.createElement("nav"), content=document.createElement("main");
 const notice=document.createElement("div"); notice.className="notice"; notice.setAttribute("role","status");
 root.append(heading,nav,notice,content);
+new ResizeObserver(()=>document.documentElement.style.setProperty("--nav-height",`${nav.offsetHeight}px`)).observe(nav);
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text="",className=""):HTMLElementTagNameMap[K] {
   const node=document.createElement(tag); if(text)node.textContent=text;if(className)node.className=className;return node;
 }
@@ -81,13 +93,14 @@ function render() {
   window.scrollTo(0,0);
   heading.replaceChildren(el("div","Calibre Curator","brand"),
     el("div","Local rules. Source-backed metadata. No AI credits.","muted"));
-  nav.replaceChildren(...["Library","Universes","References & sources","AI assistant","Review","History","Diagnostics","Settings"].map(name=>
+  nav.replaceChildren(...["Library","Universes","References & sources","AI assistant","Synopses","Review","History","Diagnostics","Settings"].map(name=>
     button(name,()=>{tab=name;if(name==="Library")universeFilter=null;render();},tab===name?"active":"")));
   content.replaceChildren();
   if(!state)return;
   if(tab==="Library")audit();
   else if(tab==="Universes")universes();
   else if(tab==="AI assistant")aiWorkspace();
+  else if(tab==="Synopses")synopses();
   else if(tab==="References & sources")references();
   else if(tab==="Review")review();
   else if(tab==="History")history();
@@ -367,7 +380,7 @@ function history() {
   title("History & recovery","Undo/recovery uses Calibre’s API, never a blind database restore. Intervening edits or an uncheckpointed write block automatic reversal.");
   for(const op of state.history) {
     const card=el("section","","card");
-    card.append(el("h2",`${op.kind} · ${op.phase} · ${op.changes.length} books`),
+    card.append(el("h2",`${op.metadata_field??"series"} · ${op.kind} · ${op.phase} · ${op.changes.length} books`),
       el("p",`${new Date(op.created*1000).toLocaleString()} · ${op.library}`),el("small",op.id),
       el("p",`Backup: ${op.backup??"not created"}`));
     if(op.error)card.append(el("p",op.error,"error"));
@@ -421,6 +434,132 @@ function settings() {
   el("p","No credentials, AI API keys, Calibre passwords or paid-provider configuration are needed."));
 }
 
+function synopses() {
+  title("Metadata lookup & synopses","Search selected Calibre providers, confirm the work/edition, then create and approve a synopsis draft. Existing Comments and all series fields remain protected.");
+  const config=structuredClone(state.data.metadata_settings),settingsBox=el("details");
+  settingsBox.open=state.data.metadata_providers.length===0;
+  settingsBox.append(el("summary","Metadata provider settings"));
+  const binary=field("Absolute fetch-ebook-metadata executable",config.fetch_binary),
+    timeout=field("Per-provider timeout (5–30 seconds)",String(config.timeout_seconds),"number"),
+    days=field("Lookup cache days (0 disables reuse; maximum 30)",String(config.cache_days),"number"),
+    providers=el("select");
+  providers.multiple=true;providers.size=7;
+  const catalogue=state.data.metadata_providers.length?state.data.metadata_providers:
+    config.providers.map(name=>({name,version:"discover to verify",identify:true,enabled:true}));
+  for(const p of catalogue) {
+    const option=el("option",`${p.name} · ${p.version}${!p.identify?" · covers only":!p.enabled?" · disabled in Calibre":""}`);
+    option.value=p.name;option.selected=config.providers.includes(p.name);option.disabled=!p.identify||!p.enabled;providers.append(option);
+  }
+  const providerLabel=el("label");providerLabel.append(el("span","Select 1–3 providers (Ctrl-click for multiple)"),providers);
+  settingsBox.append(binary.wrapper,timeout.wrapper,days.wrapper,providerLabel,
+    button("Discover Calibre providers",()=>act("metadata_discover",{},"Provider capabilities and enabled status loaded; no lookup performed.")),
+    button("Save metadata settings",()=>{
+      config.fetch_binary=binary.input.value.trim();config.timeout_seconds=Number(timeout.input.value);
+      config.cache_days=Number(days.input.value);config.providers=Array.from(providers.selectedOptions,o=>o.value);
+      return act("metadata_settings",config,"Metadata settings saved. Credentials remain managed by Calibre.");
+    }),
+    el("p","Calibre's existing plugin configuration is reused. Configure credentials or enable providers in Calibre; Curator does not request or copy API keys. Raw plugin diagnostics are discarded."));
+  content.append(settingsBox);
+  const eligible=state.proposals.map(p=>p.book).filter(b=>!b.authors.some(a=>normalized(a)==="calibre")&&
+    !(b.formats.length>0&&b.formats.every(f=>f==="CSV"||f==="XML")));
+  const missing=eligible.filter(b=>!b.has_comments);
+  content.append(el("p",`${missing.length} book records have blank Comments; catalogue/export records are excluded. Metadata-only records can be looked up, but matching a filename or title alone does not establish identity.`));
+  if(!eligible.some(b=>b.id===synopsisBook))synopsisBook=missing[0]?.id??0;
+  const search=field("Find a book (title or author)"),books=el("select"),bookInfo=el("div"),results=el("div");
+  function bookOptions() {
+    const needle=search.input.value.toLowerCase(),empty=el("option","Choose a book");empty.value="";books.replaceChildren(empty);
+    const matches=eligible.filter(b=>(!b.has_comments||b.id===synopsisBook)&&
+      `${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle)).slice(0,100);
+    for(const b of matches) {
+      const option=el("option",`#${b.id} ${b.title} — ${b.authors.join(" & ")}${b.has_comments?" · Comments populated/protected":""}`);
+      option.value=String(b.id);option.selected=b.id===synopsisBook;books.append(option);
+    }
+  }
+  function showBook() {
+    bookInfo.replaceChildren();
+    const book=eligible.find(b=>b.id===synopsisBook);
+    if(book)bookInfo.append(el("strong",book.title),el("p",book.authors.join(" & ")),
+      el("p",`Identifiers: ${JSON.stringify(book.identifiers)} · Formats: ${book.formats.join(", ")||"no local ebook format"}`),
+      el("p",book.has_comments?"Comments are populated: generation/apply will refuse to overwrite them.":"Comments are blank; any description still requires source and text approval.",book.has_comments?"warning":"muted"));
+    lookupCards();draftCards();
+  }
+  search.input.oninput=bookOptions;books.onchange=()=>{synopsisBook=Number(books.value);showBook();};
+  bookOptions();
+  const lookup=async(refresh:boolean)=>{
+    const book=eligible.find(b=>b.id===synopsisBook);if(!book)throw new Error("Choose a book first.");
+    if(!await confirmAction("Search online metadata sources?",
+      `Send the title, authors and recognized identifiers for "${book.title}" to ${state.data.metadata_settings.providers.join(", ")} only. No ebook files or library inventory are sent; providers may require configured credentials or impose limits.`))return;
+    await act("metadata_lookup",{book_id:book.id,refresh},"Lookup finished. Review each provider separately; no identity was automatically confirmed.");
+  };
+  content.append(search.wrapper,books,bookInfo,button("Look up selected book",()=>lookup(false),"primary"),
+    button("Refresh lookup (ignore cache)",()=>lookup(true)),results);
+  const drafts=el("div");content.append(drafts);
+  function lookupCards() {
+    results.replaceChildren(el("h2","Provider results"));
+    const entries=state.data.metadata_results.filter(r=>r.library===state.data.settings.library&&r.book_id===synopsisBook);
+    for(const result of entries) {
+      const card=el("section","","card"),metadata=result.metadata;
+      card.append(el("h3",`${result.provider.name} · ${result.match_status} · ${result.cached?"cached":"fetched"}`),
+        el("p",`${new Date(result.fetched_at*1000).toLocaleString()} · provider version ${result.provider.version}`),el("p",result.note,"warning"));
+      if(metadata) {
+        card.append(el("strong",metadata.title),el("p",metadata.authors.join(" & ")),
+          el("p",`Publisher: ${metadata.publisher??"not supplied"} · IDs: ${JSON.stringify(metadata.identifiers)}`),
+          el("p",metadata.url??"No stable public source URL returned; provider/query/time/hash provenance is retained."),
+          el("pre",metadata.description||"No description was supplied."));
+        if(entries.some(other=>other.id!==result.id&&other.metadata?.description&&
+          normalized(other.metadata.description)===normalized(metadata.description)))
+          card.append(el("p","Another provider returned the same description. This is not independent corroboration.","warning"));
+        if(result.match_status==="compatible")card.append(
+          button(result.identity_confirmed?"Revoke work/edition confirmation":"Confirm matching work and edition",async()=>{
+            if(!result.identity_confirmed&&!await confirmAction("Confirm source identity?",
+              "Compare title, authors, identifiers, edition and collection scope. Where the ebook is ambiguous or misattributed, establish its actual identity first. A provider match is not a factual guarantee."))return;
+            await act("metadata_confirm",{id:result.id,confirmed:!result.identity_confirmed},"Source confirmation saved. No synopsis approved or metadata written.");
+          }));
+        if(result.identity_confirmed&&result.match_status==="compatible"&&metadata.description.length>=80) {
+          const generate=async(ollama:boolean,refresh=false)=>{
+            if(ollama&&!state.data.ai_settings.enabled)throw new Error("Enable and configure local Ollama in AI assistant first, or reuse the provider description.");
+            if(!await confirmAction("Create an unapproved synopsis draft?",ollama?
+              "Send this reviewed description to the configured local/private Ollama server. Unsupported facts and model memory are not permitted; inspect citations before approval.":
+              "Retain this provider description as a draft. It is not automatically approved or applied."))return;
+            await act("synopsis_generate",{id:result.id,ollama,refresh},"Unapproved synopsis result saved. Review the text and citations before approval.");
+          };
+          card.append(button("Use source description as draft",()=>generate(false)),
+            button("Draft synopsis with Ollama",()=>generate(true)),
+            button("Regenerate synopsis (ignore AI cache)",()=>generate(true,true)));
+        }
+      }results.append(card);
+    }
+    if(!entries.length)results.append(el("p","No lookup results for this book."));
+  }
+  function draftCards() {
+    drafts.replaceChildren(el("h2","Synopsis drafts"));
+    for(const draft of state.data.synopsis_drafts.filter(d=>d.library===state.data.settings.library&&
+      (synopsisBook===0||d.book_id===synopsisBook)).slice(0,50)) {
+      const card=el("section","","card");card.append(el("h3",`${draft.title} · ${draft.state}`),
+        el("p",`${draft.model} · ${draft.cached?"cache hit":"new draft"} · ${draft.output_tokens} generated tokens`),
+        el("p",draft.notes),inspectEvidence(draft.citations,state.data.sources.find(s=>s.id===draft.source_id)));
+      if(draft.state!=="insufficient_evidence"&&draft.state!=="applied") {
+        const text=el("textarea");text.rows=7;text.value=draft.text;
+        const label=el("label");label.append(el("span","Synopsis text (plain text; HTML is escaped when applied)"),text);
+        let approved=draft.approved;
+        card.append(label,checkbox("I reviewed this synopsis against the source and approve it",approved,v=>approved=v),
+          button("Save synopsis review",()=>act("synopsis_save",{id:draft.id,text:text.value,approved},"Synopsis review saved. Apply remains a separate action.")));
+      } else card.append(el("p",draft.text||"No supported synopsis was generated."));
+      if(draft.approved&&draft.state==="approved")card.append(checkbox("Select this approved synopsis for apply",synopsisSelected.has(draft.id),
+        value=>{if(value)synopsisSelected.add(draft.id);else synopsisSelected.delete(draft.id);}));
+      drafts.append(card);
+    }
+    drafts.append(button("Apply selected approved synopses",async()=>{
+      const selected=state.data.synopsis_drafts.filter(d=>synopsisSelected.has(d.id)&&d.library===state.data.settings.library&&d.approved&&d.state==="approved");
+      if(!selected.length)throw new Error("Select at least one approved synopsis.");
+      if(!await confirmAction(`Fill blank Comments for ${selected.length} book(s)?`,
+        `Library: ${state.data.settings.library}. Close Calibre normally first. Only blank Comments are filled; existing Comments and series values are preserved. Backups/journals: ${state.workspace}/operations.`))return;
+      await act("synopsis_apply",selected.map(d=>d.id),"Synopses applied and verified through Calibre. All-book hierarchy, Comments, OPFs and unrelated metadata checked.");
+      synopsisSelected.clear();tab="History";render();
+    },"primary"));
+  }
+  showBook();
+}
 function normalized(value:string) {return value.normalize("NFD").replace(/\p{M}/gu,"").toLowerCase().replace(/[^\p{L}\p{N}]/gu,"");}
 function inspectEvidence(citations:Citation[],source:Source|undefined) {
   const details=el("details");details.append(el("summary","Inspect exact cited source text"));

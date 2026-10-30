@@ -2,6 +2,19 @@ use crate::model::{Book, Column, Scan, SeriesValue, Settings};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::{collections::BTreeMap, path::Path};
+pub fn comments(settings: &Settings, id: i64) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let db = Connection::open_with_flags(
+        Path::new(&settings.library).join("metadata.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let raw: Option<Option<String>> = db
+        .query_row("SELECT text FROM comments WHERE book=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(raw.flatten())
+}
 pub fn discover(library: &str) -> Result<Vec<Column>> {
     let connection = Connection::open_with_flags(
         Path::new(library).join("metadata.db"),

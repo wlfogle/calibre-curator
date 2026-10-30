@@ -3,6 +3,8 @@ mod ai_app;
 pub mod app;
 pub mod library;
 pub mod matching;
+pub mod metadata;
 pub mod model;
 pub mod sources;
 pub mod store;
+pub mod synopsis;

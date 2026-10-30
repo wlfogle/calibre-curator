@@ -246,7 +246,7 @@ impl Ollama {
             })
             .collect())
     }
-    pub fn generate(&self, model: &AiModel, segments: &[Segment], universe: &str) -> Result<Value> {
+    fn require_local_model(&self, model: &AiModel) -> Result<()> {
         if !model.usable {
             bail!("Model cannot be used: {}", model.reason);
         }
@@ -262,6 +262,25 @@ impl Ollama {
         {
             bail!("Only downloaded local completion models are supported; cloud/remote models are blocked");
         }
+        Ok(())
+    }
+    pub fn structured(
+        &self,
+        model: &AiModel,
+        system: &str,
+        input: &Value,
+        schema: &Value,
+    ) -> Result<Value> {
+        self.require_local_model(model)?;
+        self.post("/api/chat",&json!({
+            "model":model.name,"stream":false,"think":false,"format":schema,"keep_alive":"2m",
+            "options":{"temperature":0,"seed":0,"num_ctx":8192,"num_predict":2048},
+            "messages":[{"role":"system","content":format!("{system}\nReturn JSON matching: {schema}")},
+                {"role":"user","content":serde_json::to_string(input)?}]
+        }))
+    }
+    pub fn generate(&self, model: &AiModel, segments: &[Segment], universe: &str) -> Result<Value> {
+        self.require_local_model(model)?;
         let schema = schema();
         let system=format!(
             "Extract ONLY explicitly supported book hierarchy facts from the supplied source excerpts. \

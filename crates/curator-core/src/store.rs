@@ -65,6 +65,27 @@ impl Store {
         )?;
         Ok(())
     }
+    pub fn cached_value<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        let raw: Option<String> = self
+            .connection
+            .query_row("SELECT value FROM ai_cache WHERE key=?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
+            .transpose()
+    }
+    pub fn cache_value(&self, key: &str, value: &impl Serialize) -> Result<()> {
+        self.connection.execute("INSERT INTO ai_cache(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [key,&serde_json::to_string(value)?])?;
+        Ok(())
+    }
+    pub fn lookup_cached(&self, key: &str) -> Result<Option<crate::metadata::CachedMetadata>> {
+        self.cached_value(&format!("metadata:{key}"))
+    }
+    pub fn lookup_cache(&self, key: &str, value: &crate::metadata::CachedMetadata) -> Result<()> {
+        self.cache_value(&format!("metadata:{key}"), value)
+    }
     pub fn cached(&self, key: &str) -> Result<Option<crate::ai::AiRun>> {
         let raw: Option<String> = self
             .connection
@@ -81,7 +102,8 @@ impl Store {
         Ok(())
     }
     pub fn clear_ai_cache(&self) -> Result<()> {
-        self.connection.execute("DELETE FROM ai_cache", [])?;
+        self.connection
+            .execute("DELETE FROM ai_cache WHERE key NOT LIKE 'metadata:%'", [])?;
         Ok(())
     }
 }

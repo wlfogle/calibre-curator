@@ -334,7 +334,7 @@ impl App {
             })
             .unwrap_or_default()
     }
-    fn run(&mut self, mut operation: Operation) -> Result<Operation> {
+    pub(crate) fn run(&mut self, mut operation: Operation) -> Result<Operation> {
         let binary = Path::new(&self.data.settings.calibre_binary);
         if !binary.is_absolute()
             || binary.file_name().and_then(|s| s.to_str()) != Some("calibre-debug")
@@ -401,7 +401,12 @@ impl App {
         self.refresh()?;
         Ok(operation)
     }
-    fn operation(&self, changes: Vec<Change>, kind: &str, parent: Option<String>) -> Operation {
+    pub(crate) fn operation(
+        &self,
+        changes: Vec<Change>,
+        kind: &str,
+        parent: Option<String>,
+    ) -> Operation {
         Operation {
             id: new_id(),
             created: std::time::SystemTime::now()
@@ -418,6 +423,7 @@ impl App {
             changes,
             protections: self.protections(),
             verification: None,
+            metadata_field: series_field(),
         }
     }
     pub fn apply(&mut self, requests: Vec<Change>) -> Result<Operation> {
@@ -500,6 +506,7 @@ impl App {
                 )],
                 authors: book.authors.clone(),
                 identifiers: book.identifiers.clone(),
+                comments: None,
             });
         }
         if changes.is_empty() {
@@ -542,6 +549,20 @@ impl App {
                 sources: vec![id.clone()],
                 authors: book.authors.clone(),
                 identifiers: book.identifiers.clone(),
+                comments: if previous.metadata_field == "comments" {
+                    Some(CommentEdit {
+                        before: library::comments(&self.data.settings, book.id)?,
+                        after: entry
+                            .comments
+                            .as_ref()
+                            .context("Missing Comments reversal values")?
+                            .before
+                            .clone()
+                            .filter(|s| !s.trim().is_empty()),
+                    })
+                } else {
+                    None
+                },
             });
         }
         let kind = if previous.phase == "verified" {
@@ -549,7 +570,18 @@ impl App {
         } else {
             "recover"
         };
-        let result = self.run(self.operation(changes, kind, Some(id.clone())))?;
+        let mut operation = self.operation(changes, kind, Some(id.clone()));
+        operation.metadata_field = previous.metadata_field.clone();
+        let result = self.run(operation)?;
+        if previous.metadata_field == "comments" {
+            for draft in &mut self.data.synopsis_drafts {
+                if draft.operation_id.as_deref() == Some(&id) {
+                    draft.state = "undone".into();
+                    draft.approved = false;
+                }
+            }
+            self.store.save(&self.data)?;
+        }
         let mut previous = previous;
         previous.phase = if kind == "undo" {
             "undone"

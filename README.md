@@ -14,9 +14,18 @@ fish run-curator.fish
 Subsequent launches can use **Calibre Curator** in the application menu. Rebuild after pulling source updates with `git pull --ff-only` and `pnpm package`. Preserve the separate application workspace; do not replace it with an empty directory when upgrading.
 
 ## Run
-Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.2.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it.
+### Version 0.3.0
+- Adds the **Synopses** workspace and per-provider `fetch-ebook-metadata` lookups using existing Calibre plugin configuration.
+- Adds explicit work/edition confirmation, provider-description reuse, cited Ollama synopsis drafts, text review and blank-Comments-only apply.
+- Extends backups, OPF verification, history, guarded undo and interrupted recovery to Comments while preserving series metadata.
+- Adds read-only CLI commands for provider discovery, lookup, source confirmation and drafting. There is no CLI command that applies synopsis changes.
 
-To install the built package rather than run from the checkout, use `sudo nala install ./target/release/bundle/deb/calibre-curator_0.2.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug`.
+This release does not certify arbitrary provider/model output, repair ebook files, automatically identify mixed-content books, overwrite populated Comments or download models. Validate a disposable library before your first write. Network/model tests depend on provider availability and installed local models; deterministic safety tests run without those services.
+
+### Launch or install
+Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.3.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it. Close older Curator windows before upgrading to avoid simultaneous versions saving different application-state schemas.
+
+To install the built package rather than run from the checkout, use `sudo nala install ./target/release/bundle/deb/calibre-curator_0.3.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug` and `fetch-ebook-metadata`.
 
 For an application-menu entry without installing the Debian package, run `python3 scripts/install_launcher.py`. It creates a per-user **Calibre Curator** entry pointing to this repository's release build and icon. Rerun it if you move the repository.
 
@@ -53,6 +62,52 @@ A new checkout does not contain anyone's private pre-seeded library rules. Impor
 - **unresolved:** identity, chronology or evidence is insufficient, or approved rules conflict. Add evidence or resolve the conflict instead of forcing a batch.
 
 Use **Universes → Inspect these books** for an exact group filter; clear that filter to return to the whole library. **Select eligible on this page** selects only the currently displayed page, not every matching record.
+
+## Metadata lookup and book synopses
+The **Synopses** tab is separate from series curation. It can query your installed Calibre metadata providers, retain their descriptions as drafts, or use local Ollama to write a short source-grounded synopsis. Only blank Comments can be filled. Lookup never changes a book's title, author, identifiers, publisher, cover or series metadata.
+
+### Choose sources and look up a book
+1. Scan the library and open **Synopses**. Catalogue/export records are excluded by default. Records without an ebook file can still be researched, but absence/corruption/mixed contents may prevent reliable identification.
+2. Open **Metadata provider settings**, verify the absolute `fetch-ebook-metadata` path, and click **Discover Calibre providers**.
+3. Select 1–3 enabled **identify** providers, choose a 5–30 second timeout and save. Cover-only or disabled providers cannot supply synopsis lookups. Configure credentials and provider enablement in Calibre itself; Curator does not read/copy API keys.
+4. Find/select a book with blank Comments and click **Look up selected book**. Confirm sharing that selected book's public title, authors and recognized identifiers with the named online providers. No ebook files or full library inventory are uploaded.
+5. Review each provider's returned title, authors, identifiers, description, version and fetch time separately. Identifier search is preferred, but the returned title/author must also be consistent. Different works, conflicting identifiers and different editions stay blocked.
+6. Click **Confirm matching work and edition** only after checking the actual work, edition and collection/omnibus scope. This confirms identity, not the truth of every description sentence. Identical descriptions returned by different providers are not independent corroboration.
+
+Calibre's CLI returns its top result, not a complete candidate list. A successful lookup can still be the wrong book. Where the record itself is misattributed, correct/establish its identity before confirming evidence; do not force a mismatch through the workflow. Curator does not silently repair corrupt EPUBs or infer which work a mixed-content file represents.
+
+Lookups run one provider per subprocess, never a default all-provider search. Responses are cached privately for seven days by default (configurable 0–30); **Refresh lookup** bypasses reuse. Each subprocess has bounded output and a wall-clock limit. On timeout only its own process group is stopped, not an existing Calibre GUI or content-server job. Raw plugin diagnostics are discarded to avoid retaining accidentally logged credentials. Providers can still require accounts, fail, impose quotas or return no description.
+
+### Reliable source material
+Prefer an official publisher or author description tied to the correct work/edition, matching jacket/back-cover copy, or a description from a bibliographic service with consistent identifiers. Calibre lookup providers are acquisition channels, not automatic certificates of reliability. Public links are derived from recognized returned identifiers when possible; missing URLs are reported honestly.
+
+Readable owned ebook text/front matter can help establish identity, but this workflow does not upload or summarize entire ebooks automatically. A title alone, generic fan reading order or model memory is insufficient. A short story with little published description may remain unresolved rather than receive an invented plot.
+
+### Create, approve and apply
+1. After identity confirmation, inspect the exact description. Descriptions shorter than 80 UTF-8 bytes are held as insufficient input.
+2. Choose **Use source description as draft** to retain a suitable short blurb without AI, or **Draft synopsis with Ollama** to condense it. Ollama uses the existing optional AI configuration and local-model restrictions. Direct reuse and model output are bounded to 4,000 UTF-8 bytes and 220 words; longer blurbs need shortening.
+3. Inspect the unapproved draft, model/source provenance and literal description citations. The model has a separate synopsis schema and cannot choose a library record, approve text or invoke the writer. “Insufficient evidence” creates no approvable text.
+4. Edit the plain synopsis text if needed, check **I reviewed this synopsis against the source and approve it**, and click **Save synopsis review**. Changes are still only in the private workspace.
+5. Select the approved draft and click **Apply selected approved synopses**. Confirm the named library and close Calibre normally first. The application rechecks current identity and exact blank before-Comments under Calibre's real lock, escapes plain text into simple HTML, and writes only Comments.
+6. Wait for a verified **comments** operation in History. Verification covers all books' hierarchy and Comments, target OPF descriptions, unrelated metadata and integrity. Existing nonblank Comments are never overwritten, including nonempty stored HTML. If necessary, use the matching History entry's guarded undo before further edits.
+
+Synopsis source confirmation and text approval are separate. Revoking a source confirmation also removes approval from its drafts. Model responses are cached by exact evidence, model digest, endpoint and prompt version; **Regenerate synopsis** explicitly bypasses the AI cache. Clearing AI response caches does not delete source evidence, metadata lookup caches, reviewed synopsis drafts or operation backups.
+
+### Read-only CLI lookup and drafting
+From the built checkout, replace the library and book ID below with your own selected record:
+```fish
+set workspace "$HOME/.local/share/org.nexus.calibre-curator"
+set library "$HOME/Calibre Library"
+target/release/curator providers "$workspace" "$library"
+target/release/curator lookup "$workspace" "$library" 42 "Google"
+```
+The lookup output includes result IDs and identity status. After personally reviewing the result:
+```fish
+set lookup_id "paste-reviewed-compatible-result-id-here"
+target/release/curator confirm-source "$workspace" "$library" "$lookup_id"
+target/release/curator synopsis "$workspace" "$library" "$lookup_id" source
+```
+Use `ollama` instead of `source` for model drafting; this explicit CLI choice enables the stored optional AI connection. These commands update only the application workspace and never apply library changes. Approve/apply through the desktop review workflow. The Debian package installs the same helper as `calibre-curator-audit`.
 
 ## Optional Ollama assistance
 ### Connect and choose a model
@@ -123,7 +178,7 @@ Each operation directory includes:
 - `guard.json`: durable semantic checkpoint, target modification timestamps and OPF hashes.
 - `bridge.log`: installed Calibre output, including noisy plugins.
 
-Verification covers every book's hierarchy and identity, unrelated tables, category payloads, protected fields, target OPFs and SQLite integrity. Narrow expected Calibre bookkeeping changes are excluded: target modification timestamps, the metadata-dirtied queue, category sequences and trash-expiry housekeeping. Comments, publishers, identifiers, unrelated custom metadata and ebook files are not curation targets.
+Verification covers every book's hierarchy and identity, unrelated tables, category payloads, protected fields, target OPFs and SQLite integrity. Narrow expected Calibre bookkeeping changes are excluded: target modification timestamps, the metadata-dirtied queue, relevant category/comment sequences and trash-expiry housekeeping. Series operations preserve Comments. Synopsis operations change only explicitly approved target Comments and verify all other Comments and hierarchy. Publishers, identifiers, unrelated custom metadata and ebook files are never write targets.
 
 Undo and interrupted recovery reapply the original target fields **through Calibre**, after comparing the current library with the exact saved checkpoint and checking unrelated metadata against the original backup. Even an unrelated intervening edit can conservatively block reversal. No automatic database-backup overwrite is offered. A crash between a database commit/OPF write and its checkpoint also blocks automatic recovery: retain the workspace and inspect the journal/backups manually. This refusal is intentional, not permission to restore blindly.
 
@@ -159,6 +214,8 @@ Replace the library path with your own. For an installed Debian package, use `ca
 
 The opt-in real-model regression uses fictional source text only: `cargo test -p curator-core --test ai real_local_ollama_extraction -- --ignored --nocapture`. Normal tests use mock servers and do not invoke your installed model.
 
+Synopsis regressions include bounded fake providers and actual disposable Calibre Comments fill/undo/interruption/stale-edit tests. The opt-in `cargo test -p curator-core --test metadata real_local_synopsis -- --ignored --nocapture` uses a fictional provider description. `real_metadata_provider` in that test file explicitly queries one public Google book result without accessing a library.
+
 ## Troubleshooting
 - **No compatible columns:** create three series-type custom columns in Calibre, then rediscover their labels in Settings.
 - **Calibre lock refusal:** close the GUI and content server normally. Do not kill jobs or bypass the lock.
@@ -166,4 +223,8 @@ The opt-in real-model regression uses fictional source text only: `cargo test -p
 - **Undo/recovery refused:** retain all backups and journals; a newer edit or uncheckpointed write requires manual review, not a blind database restore.
 - **Ollama unavailable / model missing:** check the origin and `ollama list`, then refresh installed models. No automatic model download occurs.
 - **AI citation/schema error:** use a clearer, smaller excerpt or another compatible local model. Nothing is approved or imported from the rejected response.
+- **Provider missing/disabled/covers-only:** rediscover providers and choose an enabled identify provider; configure accounts and enablement in Calibre rather than entering credentials into Curator.
+- **Wrong book or different edition returned:** leave it unconfirmed. Verify the record's identity/identifiers or choose another source; a successful fetch is not a valid match by itself.
+- **No description or insufficient evidence:** try another provider or obtain an authoritative description. Do not ask the model to invent a plot from the title.
+- **Synopsis apply refuses Comments:** existing stored Comments are protected, including nonempty HTML. If another program edited the record after drafting, rescan and review again rather than changing the journal.
 - **Desktop launcher fails after moving the checkout:** rebuild and rerun `python3 scripts/install_launcher.py`, or install the Debian package.

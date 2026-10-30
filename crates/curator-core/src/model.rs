@@ -4,6 +4,14 @@ use std::collections::BTreeMap;
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommentEdit {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+pub fn series_field() -> String {
+    "series".into()
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SeriesValue {
@@ -135,6 +143,10 @@ pub struct AppData {
     pub ai_models: Vec<crate::ai::AiModel>,
     pub ai_runs: Vec<crate::ai::AiRun>,
     pub ai_decisions: BTreeMap<String, crate::ai::AiDecision>,
+    pub metadata_settings: crate::metadata::MetadataSettings,
+    pub metadata_providers: Vec<crate::metadata::Provider>,
+    pub metadata_results: Vec<crate::metadata::LookupResult>,
+    pub synopsis_drafts: Vec<crate::synopsis::SynopsisDraft>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +170,8 @@ pub struct Change {
     pub after: Hierarchy,
     pub evidence: String,
     pub sources: Vec<String>,
+    #[serde(default)]
+    pub comments: Option<CommentEdit>,
     #[serde(default)]
     pub authors: Vec<String>,
     #[serde(default)]
@@ -183,6 +197,8 @@ pub struct Operation {
     pub changes: Vec<Change>,
     pub protections: Vec<Protection>,
     pub verification: Option<serde_json::Value>,
+    #[serde(default = "series_field")]
+    pub metadata_field: String,
 }
 
 pub fn hierarchy_from_json(value: &serde_json::Value) -> anyhow::Result<Hierarchy> {

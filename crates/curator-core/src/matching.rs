@@ -62,7 +62,7 @@ pub fn validate_reference(reference: &Reference) -> Result<()> {
     Ok(())
 }
 
-fn isbn(value: &str) -> Option<String> {
+pub(crate) fn isbn(value: &str) -> Option<String> {
     let mut digits: String = value
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == 'X')
