@@ -18,6 +18,8 @@ The normal workspace is `$XDG_DATA_HOME/org.nexus.calibre-curator` (usually `~/.
 5. Select eligible books, open **Review**, and select individual changed fields. Explicitly confirm applying to the named library. The bridge obtains Calibre's real writer lock, backs up the database and original target OPFs, checks stale values, writes through Calibre's API, and verifies the result.
 6. **History** shows journals, verification, backup locations and guarded undo/recovery. **Diagnostics** separately reports missing comments, publishers, identifiers and formats, without editing them.
 
+**Universes** groups recognized owned records by approved target, candidate alias or existing primary series. It shows approved-match/unresolved counts, partial-source warnings, nested subseries, proposed memberships and gaps in parent fields. It never certifies unknown universe membership merely because a group exists. Applying operations streams live lock/backup/write/OPF/verification progress into the status bar while preserving durable journals.
+
 Current Greater Foundation Universe and Greater Eternal Champion Saga records receive four-field pins on first scan, including newly completed memberships. Saved explicit unlocks persist; rescanning does not silently re-lock them. Unlocking requires a separate confirmation. Pins can also be set for any individual book/field. Unlocked fields can be reviewed without writing a different pinned field.
 
 ### Existing reviewed batches and finalized research

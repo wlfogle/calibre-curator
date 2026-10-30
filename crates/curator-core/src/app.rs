@@ -9,8 +9,9 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 #[derive(Serialize)]
@@ -21,11 +22,13 @@ pub struct Snapshot {
     pub history: Vec<Operation>,
     pub issues: BTreeMap<String, String>,
 }
+pub type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub struct App {
     pub store: Store,
     pub data: AppData,
     pub scan: Option<Scan>,
     pub bridge: PathBuf,
+    pub progress: Option<ProgressCallback>,
 }
 impl App {
     pub fn open(root: &Path, bridge: PathBuf) -> Result<Self> {
@@ -36,6 +39,7 @@ impl App {
             data,
             scan: None,
             bridge,
+            progress: None,
         })
     }
     pub fn refresh(&mut self) -> Result<()> {
@@ -337,23 +341,49 @@ impl App {
         fs::create_dir(&folder)?;
         let journal = folder.join("operation.json");
         atomic_json(&journal, &operation)?;
-        let output = Command::new(binary)
+        let mut log = fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(folder.join("bridge.log"))?;
+        let spawn = Command::new(binary)
             .args(["-e"])
             .arg(&self.bridge)
             .arg("--")
             .arg(&journal)
-            .output()
-            .context("Could not start the installed Calibre bridge")?;
-        fs::write(
-            folder.join("bridge.log"),
-            [output.stdout.as_slice(), output.stderr.as_slice()].concat(),
-        )?;
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log.try_clone()?))
+            .spawn();
+        let mut child = match spawn {
+            Ok(child) => child,
+            Err(error) => {
+                operation.phase = "rejected".into();
+                operation.error = Some(format!("Could not start Calibre: {error}"));
+                atomic_json(&journal, &operation)?;
+                return Err(error.into());
+            }
+        };
+        let mut reader = BufReader::new(child.stdout.take().context("Bridge stdout unavailable")?);
+        let mut bytes = Vec::new();
+        while reader.read_until(b'\n', &mut bytes)? != 0 {
+            log.write_all(&bytes)?;
+            if let Some(update) = String::from_utf8_lossy(&bytes)
+                .trim()
+                .strip_prefix("CURATOR_PROGRESS:")
+            {
+                if let Some(callback) = &self.progress {
+                    callback(update);
+                }
+            }
+            bytes.clear();
+        }
+        let status = child.wait()?;
+        log.sync_all()?;
         operation = serde_json::from_slice(&fs::read(&journal)?)?;
-        if !output.status.success() || operation.phase != "verified" {
+        if !status.success() || operation.phase != "verified" {
             let error = operation.error.clone().unwrap_or_else(|| {
                 format!(
                     "Bridge exited {}; inspect {}",
-                    output.status,
+                    status,
                     folder.join("bridge.log").display()
                 )
             });

@@ -7,7 +7,7 @@ use std::{
         Arc, Mutex,
     },
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 struct Runtime {
     app: Arc<Mutex<App>>,
@@ -124,6 +124,10 @@ pub fn run() {
                 .resource_dir()?
                 .join("resources/bridge.py");
             let mut core = App::open(&root, bridge)?;
+            let handle = application.handle().clone();
+            core.progress = Some(Box::new(move |update| {
+                let _ = handle.emit("curator-progress", update);
+            }));
             if let Some(library) = std::env::var_os("CURATOR_LIBRARY") {
                 core.data.settings.library = library.to_string_lossy().into();
             }

@@ -92,9 +92,20 @@ fn calibre_api_roundtrip_recovery_lock_and_guards() {
     };
     reference.hierarchy[3] = SeriesValue::default();
     app.save_reference(reference).unwrap();
+    let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let received = updates.clone();
+    app.progress = Some(Box::new(move |event| {
+        received.lock().unwrap().push(event.into())
+    }));
     let stale = request(&app, book.id);
     let operation = app.apply(vec![stale.clone()]).unwrap();
     assert_eq!(operation.phase, "verified");
+    let events = updates.lock().unwrap().clone();
+    assert!(events.iter().any(|event| event.contains("backed_up")));
+    assert!(events.iter().any(|event| event.contains("verified")));
+    assert!(events
+        .iter()
+        .all(|event| serde_json::from_str::<serde_json::Value>(event).is_ok()));
     assert_eq!(
         operation.verification.as_ref().unwrap()["all_book_series_checked"],
         4

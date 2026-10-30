@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import "./style.css";
 
@@ -22,6 +23,7 @@ type Snapshot = { workspace:string; data:{settings:Settings; references:Referenc
 
 let state:Snapshot;
 let tab="Library", busy=false, query="", status="", page=0;
+let universeFilter:string|null=null;
 const selected=new Map<number,Set<number>>();
 const root=document.querySelector<HTMLDivElement>("#app")!;
 const heading=document.createElement("header"), nav=document.createElement("nav"), content=document.createElement("main");
@@ -68,11 +70,12 @@ function render() {
   window.scrollTo(0,0);
   heading.replaceChildren(el("div","Calibre Curator","brand"),
     el("div","Local rules. Source-backed metadata. No AI credits.","muted"));
-  nav.replaceChildren(...["Library","References & sources","Review","History","Diagnostics","Settings"].map(name=>
-    button(name,()=>{tab=name;render();},tab===name?"active":"")));
+  nav.replaceChildren(...["Library","Universes","References & sources","Review","History","Diagnostics","Settings"].map(name=>
+    button(name,()=>{tab=name;if(name==="Library")universeFilter=null;render();},tab===name?"active":"")));
   content.replaceChildren();
   if(!state)return;
   if(tab==="Library")audit();
+  else if(tab==="Universes")universes();
   else if(tab==="References & sources")references();
   else if(tab==="Review")review();
   else if(tab==="History")history();
@@ -80,6 +83,54 @@ function render() {
   else settings();
 }
 function title(text:string,description:string) {content.append(el("h1",text),el("p",description,"muted"));}
+function candidateUniverse(p:Proposal):string {
+  const alias=state.data.aliases.find(a=>p.book.hierarchy.some(v=>
+    v.name?.trim().toLowerCase()===a.existing_series.trim().toLowerCase()));
+  return p.after?.[0].name??alias?.universe??p.book.hierarchy[0].name??"(Ungrouped)";
+}
+function universes() {
+  title("Universe & subseries coverage","These groups cover recognized owned records only. Candidate aliases and populated metadata are not chronology evidence; complete source claims are not a guarantee of complete library coverage.");
+  const groups=new Map<string,Proposal[]>();
+  for(const p of state.proposals) {
+    const name=candidateUniverse(p);const books=groups.get(name)??[];books.push(p);groups.set(name,books);
+  }
+  const search=field("Filter universe or series");
+  const area=el("div");content.append(search.wrapper,area);
+  const update=()=>{
+    const needle=search.input.value.toLowerCase();
+    const matches=[...groups].filter(([name,books])=>`${name} ${books.flatMap(p=>
+      [...p.book.hierarchy,...(p.after??[])].map(v=>v.name??"")).join(" ")}`.toLowerCase().includes(needle))
+      .sort((a,b)=>b[1].length-a[1].length||a[0].localeCompare(b[0]));
+    area.replaceChildren(el("p",`${matches.length} groups. Showing up to 100; filter to narrow.`));
+    for(const [name,books] of matches.slice(0,100)) {
+      const card=el("details");
+      const supported=books.filter(p=>p.reference_id&&p.after).length;
+      const protectedCount=books.filter(p=>p.pinned.some(Boolean)).length;
+      card.append(el("summary",`${name} · ${books.length} owned · ${supported} approved matches · ${books.length-supported} unresolved`));
+      const refs=state.data.references.filter(r=>r.approved&&r.hierarchy[0].name===name);
+      card.append(el("p",`${protectedCount} protected records. ${refs.some(r=>r.coverage==="complete")?
+        "At least one source is marked complete by its reviewer; unmatched records still need review.":
+        "No complete-universe coverage asserted; partial or unknown coverage."}`),
+        button("Inspect these books",()=>{universeFilter=name;query="";status="";page=0;tab="Library";render();}));
+      const branches=new Map<string,{count:number;proposed:number}>();
+      for(const p of books) {
+        const values=p.after??p.book.hierarchy;
+        for(let slot=1;slot<4;slot++)if(values[slot].name) {
+          const key=`Series${slot+1}: ${values[slot].name}`;
+          const value=branches.get(key)??{count:0,proposed:0};
+          value.count++;if(p.after&&p.changed.includes(slot))value.proposed++;
+          branches.set(key,value);
+        }
+      }
+      for(const [branch,count] of [...branches].sort((a,b)=>a[0].localeCompare(b[0])))
+        card.append(el("p",`${branch} · ${count.count} owned records (${count.proposed} proposed changes)`));
+      if(books.some(p=>p.book.hierarchy.some((v,i)=>i>0&&v.name&&!p.book.hierarchy[i-1].name)))
+        card.append(el("p","Hierarchy gap detected: a populated nested field has an empty parent. Review membership; no automatic reshuffling.","warning"));
+      area.append(card);
+    }
+  };
+  search.input.oninput=update;update();
+}
 function audit() {
   title("Library audit","Existing series values are not automatically certified. Protected numbering is retained; unresolved works require a reviewed reference.");
   const counts=state.proposals.reduce<Record<string,number>>((a,p)=>{a[p.status]=(a[p.status]??0)+1;return a;},{});
@@ -88,6 +139,7 @@ function audit() {
   for(const [key,count] of Object.entries(counts))stats.append(el("div",`${count} ${key}`,key));
   content.append(stats);
   const tools=el("div","","toolbar"),search=field("Search title, author or series",query);
+  if(universeFilter)tools.append(button(`Clear universe filter: ${universeFilter}`,()=>{universeFilter=null;render();}));
   const filter=el("select");filter.setAttribute("aria-label","Audit status");
   for(const key of ["","correct","missing","conflict","protected","unresolved"]) {
     const option=el("option",key||"All statuses");option.value=key;option.selected=status===key;filter.append(option);
@@ -98,7 +150,9 @@ function audit() {
   function rows() {
     const needle=query.toLowerCase();
     const filtered=state.proposals.filter(p=>(!status||p.status===status)
-      && [p.book.title,...p.book.authors,...p.book.hierarchy.map(v=>v.name??"")].join(" ").toLowerCase().includes(needle));
+      && (!universeFilter||candidateUniverse(p)===universeFilter)
+      && [p.book.title,...p.book.authors,candidateUniverse(p),...p.book.hierarchy.map(v=>v.name??""),
+        ...(p.after??[]).map(v=>v.name??"")].join(" ").toLowerCase().includes(needle));
     const max=Math.max(0,Math.ceil(filtered.length/60)-1);page=Math.min(page,max);
     const tools=el("div","","toolbar");
     tools.append(el("span",`${filtered.length} matches · page ${page+1}/${max+1} · ${selected.size} selected`),
@@ -347,6 +401,12 @@ function settings() {
 
 async function start() {
   try {
+    await listen<string>("curator-progress",event=>{
+      try {
+        const update=JSON.parse(event.payload) as {phase:string;completed:number;total:number};
+        if(busy)message(`Calibre: ${update.phase} · ${update.completed}/${update.total} books. Keep this window open.`);
+      }catch{/* Plugin output cannot become executable UI content. */}
+    });
     state=await invoke<Snapshot>("dispatch",{action:"snapshot",payload:{}});
     render();
     await act("scan",{},"Read-only scan complete. No Calibre metadata was changed.");

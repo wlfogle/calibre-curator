@@ -223,6 +223,8 @@ def execute(journal):
     def phase(value):
         operation["phase"] = value
         atomic(journal, operation)
+        print("CURATOR_PROGRESS:" + json.dumps({"phase": value, "completed": 0,
+                                               "total": len(operation["changes"])}), flush=True)
     db = None
     try:
         # Calibre's installed DBCtx acquires singleinstance('db') in __init__.
@@ -284,10 +286,12 @@ def execute(journal):
         targets = {entry["id"]: mapped(entry["after"]) for entry in operation["changes"]}
         phase("writing")
         write_fields(db.new_api, targets, checkpoint)
-        for book_id in sorted(ids):
+        for completed, book_id in enumerate(sorted(ids), 1):
             db.new_api.dump_metadata(book_ids={book_id})
             checkpoint()
             verify_opf(safe_opf(library, current[book_id]), targets[book_id])
+            print("CURATOR_PROGRESS:" + json.dumps({"phase": "opf", "completed": completed,
+                                                   "total": len(ids)}), flush=True)
         phase("verifying")
         actual = fingerprint(database, library, columns, ids)
         if actual["books"] != expected:

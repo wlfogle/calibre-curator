@@ -90,11 +90,11 @@ def main():
                     break
                 subprocess.run(["xdotool", "mousemove", "--window", window, "650", "550",
                                  "click", "--repeat", "3", "--delay", "100", "5"], check=True)
+                time.sleep(0.65)
             if not point:
                 raise RuntimeError(f"Native control not visible: {text}")
             print(f"Native click: {text} at {point}", flush=True)
-            subprocess.run(["xdotool", "mousemove", "--sync", "--window", window, str(point[0]), str(point[1])], check=True)
-            subprocess.run(["xdotool", "click", "1"], check=True)
+            subprocess.run(["xdotool", "mousemove", "--sync", "--window", window, str(point[0]), str(point[1]), "click", "1"], check=True)
             time.sleep(0.4)
 
         def edit(label, value):
@@ -103,6 +103,10 @@ def main():
                              "type", "--clearmodifiers", value], check=True)
 
         wait(lambda: locate("4 books"))
+        click("Universes")
+        wait(lambda:locate("Universe & subseries coverage"))
+        subprocess.run(["import","-window",window,str(folder/"universes.png")],check=True)
+        click("Library")
         subprocess.run(["import", "-window", window, str(folder / "audit.png")], check=True)
         click("View")
         wait(lambda: locate("Create reviewed reference"))
@@ -121,6 +125,7 @@ def main():
         wait(saved)
         click("Select eligible on this page")
         click("Review selected")
+        wait(lambda:locate("Field-level review"))
         wait(lambda: locate("Test Universe"))
         subprocess.run(["import", "-window", window, str(folder / "review.png")], check=True)
         lock = subprocess.Popen(["/usr/bin/calibre-debug", "-c",
