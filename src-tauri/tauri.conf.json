@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Calibre Curator",
+  "version": "0.1.0",
+  "identifier": "org.nexus.calibre-curator",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Calibre Curator", "width": 1320, "height": 860, "minWidth": 960, "minHeight": 640 }],
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "resources": ["resources/bridge.py"],
+    "icon": ["icons/128x128.png"],
+    "shortDescription": "Local, source-backed Calibre universe and sub-series curation",
+    "category": "Utility"
+  }
+}
