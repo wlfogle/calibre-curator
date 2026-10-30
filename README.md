@@ -14,6 +14,18 @@ fish run-curator.fish
 Subsequent launches can use **Calibre Curator** in the application menu. Rebuild after pulling source updates with `git pull --ff-only` and `pnpm package`. Preserve the separate application workspace; do not replace it with an empty directory when upgrading.
 
 ## Run
+### Version 0.4.0
+- Opens directly into **Repair**: scan, reuse verified sources, preview fixes together, and apply one backed-up batch.
+- Adds source-level verification of ordered ODT/HTML book entries and structured CSV/JSON mappings; no per-book rule approval is required for supported matches.
+- Uses one overarching sequence including novellas and short stories, with independent nested subseries numbers. Unowned works retain their places.
+- Fills missing **Comments/synopsis, publisher and recognized identifiers** from reviewed compatible Calibre provider results. Populated values are preserved.
+- Adds cached DuckDuckGo author/series website discovery, with honest partial/blocked results and no manual-challenge dependency.
+- Moves individual rules, model configuration and detailed diagnostics under **Advanced**. Existing workspaces, pins and history remain supported.
+### Version 0.3.1
+- Searches **all enabled Calibre identification providers** by default, including newly enabled plugins. There is no three-provider selection limit.
+- Migrates older Google-only settings to all-provider mode unless you explicitly choose a custom subset in the updated application.
+- Continues through provider failures and saves individual results as they finish, with provider-by-provider progress.
+- Adds **Search web with DuckDuckGo** for explicit browser-based source discovery. Google Books remains a Calibre metadata provider; no Google web search fallback is used.
 ### Version 0.3.0
 - Adds the **Synopses** workspace and per-provider `fetch-ebook-metadata` lookups using existing Calibre plugin configuration.
 - Adds explicit work/edition confirmation, provider-description reuse, cited Ollama synopsis drafts, text review and blank-Comments-only apply.
@@ -23,9 +35,9 @@ Subsequent launches can use **Calibre Curator** in the application menu. Rebuild
 This release does not certify arbitrary provider/model output, repair ebook files, automatically identify mixed-content books, overwrite populated Comments or download models. Validate a disposable library before your first write. Network/model tests depend on provider availability and installed local models; deterministic safety tests run without those services.
 
 ### Launch or install
-Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.3.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it. Close older Curator windows before upgrading to avoid simultaneous versions saving different application-state schemas.
+Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.4.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it. Close older Curator windows before upgrading to avoid simultaneous versions saving different application-state schemas.
 
-To install the built package rather than run from the checkout, use `sudo nala install ./target/release/bundle/deb/calibre-curator_0.3.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug` and `fetch-ebook-metadata`.
+To install the built package rather than run from the checkout, use `sudo nala install --no-install-recommends ./target/release/bundle/deb/calibre-curator_0.4.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug` and `fetch-ebook-metadata`.
 
 For an application-menu entry without installing the Debian package, run `python3 scripts/install_launcher.py`. It creates a per-user **Calibre Curator** entry pointing to this repository's release build and icon. Rerun it if you move the repository.
 
@@ -33,7 +45,29 @@ Runtime requirements: Linux with GTK 3, WebKitGTK 4.1, and an installed Calibre 
 
 The normal workspace is `$XDG_DATA_HOME/org.nexus.calibre-curator` (usually `~/.local/share/org.nexus.calibre-curator`). `CURATOR_WORKSPACE` overrides it, and `CURATOR_LIBRARY` overrides the initial library selection for testing. Keep the entire workspace outside a Calibre library. It contains private cached research, UUID bindings, rules, protections, SQLite state and operation backups; do not commit it.
 
-## Workflow
+## Normal workflow
+1. Open **Repair** and click **Scan library**. The app also performs a read-only scan at startup. Configure the library and existing series-type custom columns once through **Library settings**.
+2. In **Sources**, add your reference files or public HTTPS pages. Open **Verify source**, supply the overarching series name and author context, preview the mappings and excluded text, then verify once. Source verification approves supported document mappings, not arbitrary text or search snippets.
+3. Return to **Repair**. Supported series/subseries corrections are selected together; protected fields stay unchanged. Use the optional book filter to inspect a smaller group. The series selection remains library-wide and the final confirmation reports its size.
+4. Click **Find missing metadata** when needed. Up to 20 filtered books are looked up per request, using all enabled Calibre identification providers by default. Every provider gets an independent outcome. Consistent compatible results are prepared for preview; differing results require choosing a provider. Failed/mismatched results stay held. No ebooks or complete library inventory are uploaded.
+5. Inspect the proposed synopsis, publisher and missing identifier values beside the series corrections. Uncheck unwanted fields. The final **Apply selected fixes** confirmation also confirms the displayed work/edition matches; there is no separate per-book confirmation-and-draft-transfer sequence.
+6. Close Calibre, confirm the named library, and apply. The entire selection receives one database/OPF backup, checkpoint journal and verified History entry. **History → Guarded undo** reverses that batch if no intervening edits invalidate its checkpoint. Interrupted batches use guarded recovery; the batch is journaled, not a promise of a single atomic database transaction.
+
+Automatic fills currently cover blank Comments, blank publisher and absent/blank recognized identifier keys only. Existing identifiers are retained, invalid identifiers are filtered, and a conflicting edition is not forced through. Dates, covers, tags, languages, ratings, titles and authors are not fill targets. Long descriptions remain held rather than silently truncated; the optional advanced Ollama tools can prepare a shorter reviewed synopsis.
+
+### Verified source ordering
+For **every** overarching series, main-series positions follow the verified document's listed works, including novellas and short stories. Numbering does not restart at subseries boundaries and does not close gaps for unowned books. This is a user-verified ordering policy, not an inference that publication years establish story chronology. Generic “Phase” headings and format labels never become subseries.
+
+The ordered prose extractor supports entries such as `A Work (2020) – Branch #2`, `An Interlude (2020) – Novella`, and leading-number entries such as `3. Another Work (2021)`. Trailing explicit branch numbers populate Series2; CSV/JSON can explicitly supply Series2–4. Optional aliases normalize source labels to your preferred names. Review excluded paragraphs: unsupported free-form prose is not guessed, and a failed/partial extraction does not certify complete coverage. No titles, authors or franchise-specific mappings are hard-coded.
+
+Verification is stored against the cached source hash and exact extracted segments. Importing changed content creates an unverified source; it does not transfer approval from the old version. Revoking verification disables its document-generated corrections without rewriting existing library metadata. Duplicate source entries, ambiguous owned editions and conflicting rules stay unresolved. Matching requires title plus author context; a title alone is insufficient. Fields not supported by that source remain unchanged, including an existing nested value on an unnumbered novella.
+
+### Additional source discovery
+**Sources → Find additional author or series websites** sends the entered query to DuckDuckGo's Instant Answer and HTML endpoints. Results retain query/time/engine provenance, are cached privately, and are always **unverified leads**. Structured topic answers are not full web search. If HTML search is challenged or unavailable, usable structured leads remain visible and the run reports partial/blocked status; there is no CAPTCHA loop, mandatory browser verification, Google fallback or paid-service dependency. Local verified-source repair continues normally.
+
+Choose a public HTTPS result explicitly to fetch it as a reference, then review and verify its supported mappings. Fetches retain the public-address/DNS pinning, size, timeout and no-redirect safeguards. Sources are rendered as text; fetched content never executes commands or approves itself. Successful query retrieval is not a claim of complete author or series coverage. Cached successful searches last one day; partial/blocked runs last five minutes. AI-cache clearing preserves discovery caches.
+
+## Advanced workflow
 1. In **Settings**, choose the library and discover/map three distinct existing **series-type** custom columns. Their labels do not include `#`. No columns are automatically created.
 2. **Library** audits every record. Search/filter and inspect a book's rule or protections. `correct` means agreement with an approved rule, not merely that a series field is populated. `protected` means pinned user numbering, not independent certification.
 3. **References & sources** imports JSON/CSV, ODT, saved HTML, or an explicitly requested public HTTPS page. ODT headings and table rows retain provenance and a SHA-256 hash. Imports are always drafts, even if a JSON file contains `approved:true`.
@@ -69,14 +103,16 @@ The **Synopses** tab is separate from series curation. It can query your install
 ### Choose sources and look up a book
 1. Scan the library and open **Synopses**. Catalogue/export records are excluded by default. Records without an ebook file can still be researched, but absence/corruption/mixed contents may prevent reliable identification.
 2. Open **Metadata provider settings**, verify the absolute `fetch-ebook-metadata` path, and click **Discover Calibre providers**.
-3. Select 1–3 enabled **identify** providers, choose a 5–30 second timeout and save. Cover-only or disabled providers cannot supply synopsis lookups. Configure credentials and provider enablement in Calibre itself; Curator does not read/copy API keys.
-4. Find/select a book with blank Comments and click **Look up selected book**. Confirm sharing that selected book's public title, authors and recognized identifiers with the named online providers. No ebook files or full library inventory are uploaded.
+3. Leave **Search ALL enabled identification providers** checked to search every usable plugin. To choose a subset, uncheck it, Ctrl-click any number of providers and save; there is no three-source cap. Choose a 5–30 second per-provider timeout. Cover-only and disabled providers are excluded; enable providers/configure credentials in Calibre itself. Curator does not read/copy API keys.
+4. Find/select a book with blank Comments and click **Search all metadata providers** (or **Look up selected book** in custom mode). Confirm sharing that selected book's public title, authors and recognized identifiers with the chosen online providers. No ebook files or full library inventory are uploaded.
 5. Review each provider's returned title, authors, identifiers, description, version and fetch time separately. Identifier search is preferred, but the returned title/author must also be consistent. Different works, conflicting identifiers and different editions stay blocked.
 6. Click **Confirm matching work and edition** only after checking the actual work, edition and collection/omnibus scope. This confirms identity, not the truth of every description sentence. Identical descriptions returned by different providers are not independent corroboration.
 
 Calibre's CLI returns its top result, not a complete candidate list. A successful lookup can still be the wrong book. Where the record itself is misattributed, correct/establish its identity before confirming evidence; do not force a mismatch through the workflow. Curator does not silently repair corrupt EPUBs or infer which work a mixed-content file represents.
 
-Lookups run one provider per subprocess, never a default all-provider search. Responses are cached privately for seven days by default (configurable 0–30); **Refresh lookup** bypasses reuse. Each subprocess has bounded output and a wall-clock limit. On timeout only its own process group is stopped, not an existing Calibre GUI or content-server job. Raw plugin diagnostics are discarded to avoid retaining accidentally logged credentials. Providers can still require accounts, fail, impose quotas or return no description.
+All-provider mode rediscovers the enabled identification plugins for each lookup, then runs each separately; it does not merge everything through one opaque Calibre CLI result. It continues after failures and after successful matches, saves completed results individually, and reports progress through the full provider list. A full search can take several minutes: providers run sequentially with their own timeout and a small startup allowance. Responses are cached privately for seven days by default (configurable 0–30); **Refresh lookup** bypasses reuse. Each subprocess has bounded output and a wall-clock limit. On timeout only its own process group is stopped, not an existing Calibre GUI or content-server job. Raw plugin diagnostics are discarded to avoid retaining accidentally logged credentials. Providers can still require accounts, fail, impose quotas or return no description.
+
+**DuckDuckGo web discovery:** select a book and choose **Search web with DuckDuckGo** to open its title/authors/ISBN query in your default browser. This is separate from Calibre providers such as Google Books, Goodreads and StoryGraph. It does not automatically fetch result pages, import snippets or approve metadata. Open and verify original publisher/author/bibliographic pages; search results are leads, not evidence. DuckDuckGo is the web-search engine, with no Google web-search substitution.
 
 ### Reliable source material
 Prefer an official publisher or author description tied to the correct work/edition, matching jacket/back-cover copy, or a description from a bibliographic service with consistent identifiers. Calibre lookup providers are acquisition channels, not automatic certificates of reliability. Public links are derived from recognized returned identifiers when possible; missing URLs are reported honestly.
@@ -99,9 +135,9 @@ From the built checkout, replace the library and book ID below with your own sel
 set workspace "$HOME/.local/share/org.nexus.calibre-curator"
 set library "$HOME/Calibre Library"
 target/release/curator providers "$workspace" "$library"
-target/release/curator lookup "$workspace" "$library" 42 "Google"
+target/release/curator lookup "$workspace" "$library" 42
 ```
-The lookup output includes result IDs and identity status. After personally reviewing the result:
+The lookup uses the saved all-provider mode by default. An optional trailing provider name explicitly switches to that single-provider custom selection; it is not needed to search all sources. Output includes result IDs and identity status. After personally reviewing the result:
 ```fish
 set lookup_id "paste-reviewed-compatible-result-id-here"
 target/release/curator confirm-source "$workspace" "$library" "$lookup_id"
@@ -145,7 +181,7 @@ Local inference uses hardware and electricity, but no paid agent/API credits. No
 ## Existing reviewed batches and finalized research
 Use **Import verified batch history** on the directory containing `curation-backup-*` subdirectories. Only audits reporting verified status, integrity OK and unchanged unrelated metadata qualify. Manifests must refer to the selected library, and UUID/title identities must still match. The latest successful target per UUID wins; old rankings are not replayed.
 
-Import the finalized Moorcock ODT as a source using universe `Greater Eternal Champion Saga`. Its numbered paragraphs can generate draft main-series references, but nested series are **not guessed** from prose. Current protected user metadata remains intact. Other research documents are not automatically authoritative.
+Import research documents in **Sources** and verify their order and author context to reuse their supported mappings. The advanced import path can still create unapproved numbered-prose drafts. Nested numbers must be explicit; they are never guessed. Current protected user metadata remains intact, including previously pinned universe numbering.
 
 ## Identity and chronology
 Matching priority: reviewed UUID binding with identity checks; whitelisted work/edition identifiers (including checksum-validated ISBN-10/13); approved title/author or title aliases. Generic plugin fields such as revision numbers are not identity evidence. Same-title unrelated authors remain unmatched. Conflicting targets stay blocked. Known collection/omnibus titles cannot silently match a novel-scope reference. Title-based matching still requires the user's edition review; the application does not automatically inspect every ebook's full contents.
@@ -178,7 +214,7 @@ Each operation directory includes:
 - `guard.json`: durable semantic checkpoint, target modification timestamps and OPF hashes.
 - `bridge.log`: installed Calibre output, including noisy plugins.
 
-Verification covers every book's hierarchy and identity, unrelated tables, category payloads, protected fields, target OPFs and SQLite integrity. Narrow expected Calibre bookkeeping changes are excluded: target modification timestamps, the metadata-dirtied queue, relevant category/comment sequences and trash-expiry housekeeping. Series operations preserve Comments. Synopsis operations change only explicitly approved target Comments and verify all other Comments and hierarchy. Publishers, identifiers, unrelated custom metadata and ebook files are never write targets.
+Verification covers every book's hierarchy and identity, unrelated tables, category payloads, protected fields, target OPFs and SQLite integrity. Narrow expected Calibre bookkeeping changes are excluded: target modification timestamps, the metadata-dirtied queue, relevant category/comment/identifier sequences and trash-expiry housekeeping. Series-only operations preserve Comments. Synopsis-only operations preserve hierarchy. Combined repairs additionally verify every book's publisher and identifier map when those fields are selected, and every book's Comments when synopses are selected. Populated non-series values are protected under the writer lock. Unrelated custom metadata and ebook files are never write targets.
 
 Undo and interrupted recovery reapply the original target fields **through Calibre**, after comparing the current library with the exact saved checkpoint and checking unrelated metadata against the original backup. Even an unrelated intervening edit can conservatively block reversal. No automatic database-backup overwrite is offered. A crash between a database commit/OPF write and its checkpoint also blocks automatic recovery: retain the workspace and inspect the journal/backups manually. This refusal is intentional, not permission to restore blindly.
 
@@ -192,6 +228,7 @@ Development dependencies: Rust/Cargo (tested 1.99), Node 20.19+ and pnpm, Linux 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test -p curator-core`
+- `/usr/bin/python3 tests/ui_webkit.py` — exercises the production frontend bundle in WebKit with fictional IPC fixtures. Tests simple navigation, source-level verification, preview invalidation, provider-result preparation, selection persistence and one-confirmation combined apply. Requires Python GI and a WebKit2 introspection namespace (4.1 or 4.0) plus a graphical display; does not access Calibre or use mouse/OCR automation. Run `pnpm build` first.
 - `python3 tests/window_smoke.py` — actual native window; requires X11, xdotool, ImageMagick and tesseract. Creates a disposable library and verifies rule editing, approval, field review, the real production-lock refusal, history and an unchanged database checksum. Screenshots stay in its printed temporary directory. OCR avoids relying on an unavailable desktop accessibility bus.
 - `python3 tests/window_smoke.py --ai-workflow` — explicit native AI test, requiring local Ollama and installed `qwen3.5:4b`. Uses fictional source text only, enables AI in a disposable workspace, checks excerpt selection and inference, and verifies draft-only or insufficient-evidence behavior with an unchanged database checksum. Leave mouse/keyboard idle during native automation. The ordinary native test also checks model discovery, but does not request inference.
 - `pnpm package` — locked release builds, resource copy and `.deb`.
@@ -199,6 +236,10 @@ Development dependencies: Rust/Cargo (tested 1.99), Node 20.19+ and pnpm, Linux 
 The package script directly builds Tauri's custom protocol and stages standard Debian files. It does not use the Tauri CLI's unconditional manifest watcher, which can fail even in production builds when the machine's inotify watch quota is exhausted. No system limits are changed.
 
 The Calibre integration test creates only temporary libraries. It tests actual API apply/undo, stale review refusal, protection, a genuine bridge process exit followed by recovery, lock contention and refusal after intervening comments edits. Linux Calibre singleton names are global per user: a test-only namespace isolates the disposable fixture without changing the production bridge's locking policy. The test validates its exact temporary target before isolation. Calibre uses optimized Python; safety checks never rely on Python `assert` side effects.
+
+Combined-repair tests exercise series, subseries, Comments, publisher and identifier changes in one journal, complete guarded undo, interrupted recovery, populated non-target preservation and stale publisher refusal. Document tests cover global numbering across unowned books, explicit independent subseries indices, all four structured slots, partial-field preservation, duplicate/ambiguous matches, conflicting rules, source content changes and verification revocation. DuckDuckGo fixtures cover structured/HTML parsing, redirect-link decoding, challenge detection, unsafe links, deduplication and cache isolation.
+
+The opt-in `cargo test -p curator-core --test research public_author_discovery -- --ignored --nocapture` queries the public name Larry Niven without library data. `selected_local_document_read_only` in the documents tests reads only an explicitly selected `CURATOR_TEST_DOCUMENT`; it neither imports private contents into the repository nor accesses a Calibre library.
 
 The read-only helper accepts `curator audit WORKSPACE LIBRARY [VERIFIED_HISTORY_DIRECTORY]` and `curator import WORKSPACE LIBRARY SOURCE [UNIVERSE]`. Both can update application state but never write Calibre metadata. The package installs this executable as `calibre-curator-audit`.
 

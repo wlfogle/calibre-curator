@@ -110,9 +110,9 @@ fn synopsis_comments_roundtrip_recovery_and_existing_protection() {
     let draft = app.data.synopsis_drafts[0].clone();
     app.save_synopsis(&draft.id, &draft.text, true).unwrap();
     let broken = temp.path().join("interrupted-synopsis.py");
-    let needle = "            checkpoint()\n        else:\n            write_fields";
+    let needle = "            checkpoint()\n        if bibliography_mode:";
     assert!(source.contains(needle));
-    std::fs::write(&broken,source.replace(needle,"            checkpoint()\n            import os\n            os._exit(77)\n        else:\n            write_fields")).unwrap();
+    std::fs::write(&broken,source.replace(needle,"            checkpoint()\n            import os\n            os._exit(77)\n        if bibliography_mode:")).unwrap();
     app.bridge = broken;
     assert!(app.apply_synopses(std::slice::from_ref(&draft.id)).is_err());
     let interrupted = app
@@ -144,6 +144,185 @@ fn synopsis_comments_roundtrip_recovery_and_existing_protection() {
         Some("Intervening synopsis edit")
     );
 }
+#[test]
+fn combined_repair_roundtrip_and_recovery() {
+    use curator_core::{
+        documents::SourceReview,
+        metadata::MetadataSettings,
+        repair::{FillRequest, RepairRequest},
+    };
+    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+    if !Path::new("/usr/bin/calibre-debug").is_file() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let library = temp.path().join("library");
+    fs::create_dir(&library).unwrap();
+    command(include_str!("../../../tests/fixture.py"), &library);
+    command("import os; from calibre.db.legacy import LibraryDatabase; db=LibraryDatabase(os.environ['CURATOR_TEST_LIBRARY']); db.new_api.set_field('comments',{4:None}); db.new_api.set_field('publisher',{1:'Keep Publisher'}); db.new_api.set_field('identifiers',{1:{'goodreads':'555'}}); db.new_api.dump_metadata(book_ids={1,4}); db.close()",&library);
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/bridge.py");
+    let source=format!("import sys,json,pathlib\nif pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())['library']).resolve()!=pathlib.Path({:?}).resolve():\n raise RuntimeError('Not disposable')\nimport calibre.utils.lock as test_lock\ntest_lock.__appname__={:?}\n{}",
+        library.to_string_lossy(),format!("repair-test-{}",new_id()),fs::read_to_string(&bridge).unwrap());
+    let isolated = temp.path().join("isolated.py");
+    fs::write(&isolated, &source).unwrap();
+    let debug = temp.path().join("calibre-debug");
+    fs::write(&debug,"#!/usr/bin/python3\nimport os,sys\nif '-c' in sys.argv:\n print('CURATOR_PLUGINS:[{\"name\":\"Fixture\",\"version\":\"1\",\"enabled\":true,\"identify\":true}]')\nelse:\n os.execv('/usr/bin/calibre-debug',['/usr/bin/calibre-debug']+sys.argv[1:])\n").unwrap();
+    fs::set_permissions(&debug, fs::Permissions::from_mode(0o755)).unwrap();
+    let fetch = temp.path().join("fetch-ebook-metadata");
+    let xml="<package xmlns=\"http://www.idpf.org/2007/opf\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:opf=\"http://www.idpf.org/2007/opf\"><metadata><dc:title>Ungrouped</dc:title><dc:creator>Test Author</dc:creator><dc:publisher>Fixture Press</dc:publisher><dc:identifier opf:scheme=\"goodreads\">1234</dc:identifier><dc:description>A botanist arrives on an isolated island to investigate dying gardens. She and a local gardener trace the damage to a blocked stream while a storm threatens the village.</dc:description></metadata></package>";
+    fs::write(&fetch, format!("#!/usr/bin/python3\nprint({xml:?})\n")).unwrap();
+    fs::set_permissions(&fetch, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut app = App::open(&temp.path().join("workspace"), isolated.clone()).unwrap();
+    app.settings(Settings {
+        library: library.to_string_lossy().into(),
+        calibre_binary: debug.to_string_lossy().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    app.configure_metadata(MetadataSettings {
+        fetch_binary: fetch.to_string_lossy().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let document = temp.path().join("reference.html");
+    fs::write(
+        &document,
+        "<h2>Phase</h2><p>Unowned (2000) – Branch #1</p><p>Ungrouped (2001) – Branch #2</p>",
+    )
+    .unwrap();
+    app.import(document.to_str().unwrap(), "", false).unwrap();
+    let id = app.data.sources.last().unwrap().id.clone();
+    app.verify_document(
+        &id,
+        SourceReview {
+            universe: "Fixture Universe".into(),
+            authors: vec!["Test Author".into()],
+            aliases: BTreeMap::new(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.prepare_missing(&[4]).unwrap();
+    let fill = FillRequest {
+        lookup_id: app.data.metadata_results[0].id.clone(),
+        book: app
+            .scan
+            .as_ref()
+            .unwrap()
+            .books
+            .iter()
+            .find(|b| b.id == 4)
+            .unwrap()
+            .clone(),
+        synopsis: true,
+        publisher: true,
+        identifiers: true,
+    };
+    let before = fill.book.clone();
+    app.apply_repairs(RepairRequest {
+        series: vec![request(&app, 4)],
+        fills: vec![fill.clone()],
+    })
+    .unwrap();
+    let op = app
+        .history()
+        .unwrap()
+        .into_iter()
+        .find(|o| o.kind == "apply")
+        .unwrap();
+    assert_eq!(op.metadata_field, "repair");
+    assert_eq!(op.changes.len(), 1);
+    let now = app
+        .scan
+        .as_ref()
+        .unwrap()
+        .books
+        .iter()
+        .find(|b| b.id == 4)
+        .unwrap();
+    assert_eq!(now.hierarchy[0].index, Some(2.0));
+    assert_eq!(now.hierarchy[1].index, Some(2.0));
+    assert_eq!(now.publisher.as_deref(), Some("Fixture Press"));
+    assert_eq!(now.identifiers["goodreads"], "1234");
+    assert!(now.has_comments);
+    let keep = app
+        .scan
+        .as_ref()
+        .unwrap()
+        .books
+        .iter()
+        .find(|b| b.id == 1)
+        .unwrap();
+    assert_eq!(keep.publisher.as_deref(), Some("Keep Publisher"));
+    assert_eq!(keep.identifiers["goodreads"], "555");
+    assert!(app
+        .apply_repairs(RepairRequest {
+            series: vec![],
+            fills: vec![fill.clone()]
+        })
+        .is_err());
+    app.reverse(&op.id).unwrap();
+    let restored = app
+        .scan
+        .as_ref()
+        .unwrap()
+        .books
+        .iter()
+        .find(|b| b.id == 4)
+        .unwrap();
+    assert_eq!(restored.publisher, before.publisher);
+    assert_eq!(restored.identifiers, before.identifiers);
+    assert_eq!(restored.hierarchy, before.hierarchy);
+    assert!(!restored.has_comments);
+    // Interrupt after bibliography writes but before OPF dump; recover the complete batch.
+    let needle = "        for completed, book_id in enumerate(sorted(ids), 1):";
+    assert!(source.contains(needle));
+    let broken = temp.path().join("interrupted.py");
+    fs::write(
+        &broken,
+        source.replace(
+            needle,
+            &format!("        import os\n        os._exit(77)\n{needle}"),
+        ),
+    )
+    .unwrap();
+    app.bridge = broken;
+    assert!(app
+        .apply_repairs(RepairRequest {
+            series: vec![request(&app, 4)],
+            fills: vec![fill.clone()]
+        })
+        .is_err());
+    let interrupted = app
+        .history()
+        .unwrap()
+        .into_iter()
+        .find(|o| o.phase == "writing")
+        .unwrap();
+    app.bridge = isolated;
+    app.reverse(&interrupted.id).unwrap();
+    let restored = app
+        .scan
+        .as_ref()
+        .unwrap()
+        .books
+        .iter()
+        .find(|b| b.id == 4)
+        .unwrap();
+    assert_eq!(restored.publisher, None);
+    assert!(restored.identifiers.is_empty());
+    assert!(!restored.has_comments);
+    // A stale publisher preview must be refused before the writer starts.
+    command("import os; from calibre.db.legacy import LibraryDatabase; db=LibraryDatabase(os.environ['CURATOR_TEST_LIBRARY']); db.new_api.set_field('publisher',{4:'Later Edit'}); db.close()",&library);
+    assert!(app
+        .apply_repairs(RepairRequest {
+            series: vec![],
+            fills: vec![fill]
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("stale"));
+}
 fn request(app: &App, id: i64) -> Change {
     let p = app
         .snapshot()
@@ -163,6 +342,7 @@ fn request(app: &App, id: i64) -> Change {
         evidence: String::new(),
         sources: Vec::new(),
         comments: None,
+        bibliography: None,
     }
 }
 

@@ -139,17 +139,39 @@ fn metadata_source(provider: &Provider, metadata: &FetchedMetadata) -> Result<So
 impl App {
     pub fn configure_metadata(&mut self, settings: MetadataSettings) -> Result<()> {
         metadata::binary(&settings.fetch_binary, "fetch-ebook-metadata")?;
-        if settings.providers.is_empty()
-            || settings.providers.len() > 3
+        if (!settings.search_all && settings.providers.is_empty())
             || !(5..=30).contains(&settings.timeout_seconds)
             || settings.cache_days > 30
         {
-            bail!("Choose 1–3 providers, a 5–30 second timeout and 0–30 cache days");
+            bail!("Choose all enabled providers or a nonempty custom selection, a 5–30 second timeout and 0–30 cache days");
         }
         let mut next = self.data.clone();
         next.metadata_settings = settings;
         self.store.save(&next)?;
         self.data = next;
+        Ok(())
+    }
+    pub fn open_duckduckgo(&self, book_id: i64) -> Result<()> {
+        let book = self
+            .scan
+            .as_ref()
+            .context("Scan first")?
+            .books
+            .iter()
+            .find(|b| b.id == book_id)
+            .context("Unknown book")?;
+        let url = metadata::duckduckgo_url(book)?;
+        metadata::binary("/usr/bin/xdg-open", "xdg-open")?;
+        let mut child = std::process::Command::new("/usr/bin/xdg-open")
+            .arg(url.as_str())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Could not open DuckDuckGo in the default browser")?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         Ok(())
     }
     pub fn discover_metadata(&mut self) -> Result<()> {
@@ -174,31 +196,15 @@ impl App {
             bail!("Catalogue/export records are excluded from synopsis lookup");
         }
         let config = self.data.metadata_settings.clone();
-        if config.providers.is_empty() || config.providers.len() > 3 {
-            bail!("Choose 1–3 metadata providers");
-        }
         let providers = metadata::discover(&self.data.settings.calibre_binary)?;
-        let chosen: Vec<_> = config
-            .providers
-            .iter()
-            .map(|name| {
-                providers
-                    .iter()
-                    .find(|p| &p.name == name && p.enabled && p.identify)
-                    .cloned()
-                    .with_context(|| {
-                        format!(
-                            "{name} is not an enabled identify provider; configure it in Calibre"
-                        )
-                    })
-            })
-            .collect::<Result<_>>()?;
+        let chosen = metadata::select_providers(&config, &providers)?;
+        let total = chosen.len();
         let mut next = self.data.clone();
         next.metadata_providers = providers;
         let fingerprint = metadata::book_fingerprint(&book)?;
-        for provider in chosen {
+        for (index, provider) in chosen.into_iter().enumerate() {
             if let Some(callback) = &self.progress {
-                callback(&json!({"phase":format!("Metadata: {}",provider.name),"completed":0,"total":config.providers.len()}).to_string());
+                callback(&json!({"phase":format!("Metadata: {} ({}/{total})",provider.name,index+1),"completed":index,"total":total}).to_string());
             }
             let key = sources::hash(&serde_json::to_vec(&json!([
                 &config.fetch_binary,
@@ -275,12 +281,20 @@ impl App {
                         .any(|draft| draft.lookup_id == old.id))
             });
             next.metadata_results.insert(0, result);
+            self.store.save(&next)?;
+            self.data = next.clone();
+            if let Some(callback) = &self.progress {
+                callback(&json!({"phase":format!("Metadata: finished {} ({}/{total})",provider.name,index+1),"completed":index+1,"total":total}).to_string());
+            }
         }
         self.store.save(&next)?;
         self.data = next;
         Ok(())
     }
-    fn synopsis_evidence(&self, lookup_id: &str) -> Result<(LookupResult, Book, Source)> {
+    pub(crate) fn synopsis_evidence(
+        &self,
+        lookup_id: &str,
+    ) -> Result<(LookupResult, Book, Source)> {
         let result = self
             .data
             .metadata_results
@@ -614,6 +628,7 @@ impl App {
                     "{}; sha256={}; lookup={}",
                     source.location, source.sha256, lookup.id
                 )],
+                bibliography: None,
                 comments: Some(CommentEdit {
                     before,
                     after: Some(as_html(&draft.text)),

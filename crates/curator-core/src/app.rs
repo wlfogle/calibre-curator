@@ -53,6 +53,25 @@ impl App {
                     .or_insert([true; 4]);
             }
         }
+        for r in &mut self.data.references {
+            if r.document_verification.is_some() && r.approved {
+                let count = scan
+                    .books
+                    .iter()
+                    .filter(|b| {
+                        matching::normalize(&b.title) == matching::normalize(&r.title)
+                            && r.authors.iter().any(|a| {
+                                b.authors
+                                    .iter()
+                                    .any(|v| matching::normalize(v) == matching::normalize(a))
+                            })
+                    })
+                    .count();
+                if count > 1 {
+                    r.approved = false;
+                }
+            }
+        }
         self.store.save(&self.data)?;
         self.scan = Some(scan);
         Ok(())
@@ -427,6 +446,11 @@ impl App {
         }
     }
     pub fn apply(&mut self, requests: Vec<Change>) -> Result<Operation> {
+        let changes = self.series_changes(requests)?;
+        let operation = self.operation(changes, "apply", None);
+        self.run(operation)
+    }
+    pub(crate) fn series_changes(&self, requests: Vec<Change>) -> Result<Vec<Change>> {
         if self.history()?.iter().any(|op| {
             op.library == self.data.settings.library
                 && !["verified", "rejected", "undone", "recovered"].contains(&op.phase.as_str())
@@ -507,13 +531,13 @@ impl App {
                 authors: book.authors.clone(),
                 identifiers: book.identifiers.clone(),
                 comments: None,
+                bibliography: None,
             });
         }
         if changes.is_empty() {
             bail!("No changed fields selected");
         }
-        let operation = self.operation(changes, "apply", None);
-        self.run(operation)
+        Ok(changes)
     }
     pub fn reverse(&mut self, id: &str) -> Result<Operation> {
         let id = uuid::Uuid::parse_str(id)?.to_string();
@@ -549,7 +573,27 @@ impl App {
                 sources: vec![id.clone()],
                 authors: book.authors.clone(),
                 identifiers: book.identifiers.clone(),
-                comments: if previous.metadata_field == "comments" {
+                bibliography: if entry.bibliography.is_some()
+                    && matches!(previous.metadata_field.as_str(), "bibliography" | "repair")
+                {
+                    Some(BibliographicEdit {
+                        before: BibliographicValues {
+                            publisher: book.publisher.clone(),
+                            identifiers: book.identifiers.clone(),
+                        },
+                        after: entry
+                            .bibliography
+                            .as_ref()
+                            .context("Missing bibliographic reversal values")?
+                            .before
+                            .clone(),
+                    })
+                } else {
+                    None
+                },
+                comments: if entry.comments.is_some()
+                    && matches!(previous.metadata_field.as_str(), "comments" | "repair")
+                {
                     Some(CommentEdit {
                         before: library::comments(&self.data.settings, book.id)?,
                         after: entry
@@ -573,7 +617,7 @@ impl App {
         let mut operation = self.operation(changes, kind, Some(id.clone()));
         operation.metadata_field = previous.metadata_field.clone();
         let result = self.run(operation)?;
-        if previous.metadata_field == "comments" {
+        if matches!(previous.metadata_field.as_str(), "comments" | "repair") {
             for draft in &mut self.data.synopsis_drafts {
                 if draft.operation_id.as_deref() == Some(&id) {
                     draft.state = "undone".into();

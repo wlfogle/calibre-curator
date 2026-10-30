@@ -99,7 +99,7 @@ fn html(bytes: &[u8]) -> Result<Vec<Segment>> {
         })
         .collect())
 }
-fn parse(
+pub(crate) fn parse(
     bytes: &[u8],
     location: &str,
     kind: &str,
@@ -286,6 +286,13 @@ fn public(ip: IpAddr) -> bool {
     }
 }
 pub fn fetch(url: &str, universe: &str, scan: Option<&Scan>) -> Result<(Source, Vec<Reference>)> {
+    let (status, bytes) = public_bytes(url)?;
+    if status != 200 {
+        bail!("Source returned HTTP {status}");
+    }
+    parse(&bytes, url, "html", universe, scan)
+}
+pub fn public_bytes(url: &str) -> Result<(u16, Vec<u8>)> {
     let url = reqwest::Url::parse(url)?;
     if url.scheme() != "https"
         || url.port_or_known_default() != Some(443)
@@ -300,6 +307,7 @@ pub fn fetch(url: &str, universe: &str, scan: Option<&Scan>) -> Result<(Source, 
         bail!("Private, local, mapped and special network addresses are not allowed");
     }
     let client = reqwest::blocking::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(30))
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -310,8 +318,9 @@ pub fn fetch(url: &str, universe: &str, scan: Option<&Scan>) -> Result<(Source, 
     if response.status().is_redirection() {
         bail!("Redirect blocked: explicitly request its public HTTPS destination");
     }
+    let status = response.status().as_u16();
     let bytes = bounded(response)?;
-    parse(&bytes, url.as_str(), "html", universe, scan)
+    Ok((status, bytes))
 }
 
 /// Only successfully verified historical audits are eligible; newest per UUID wins.

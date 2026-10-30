@@ -14,6 +14,28 @@ struct Runtime {
     busy: Arc<AtomicBool>,
 }
 #[tauri::command]
+async fn preview_source(
+    state: tauri::State<'_, Runtime>,
+    id: String,
+    review: curator_core::documents::SourceReview,
+) -> Result<curator_core::documents::DocumentPreview, String> {
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return Err("An operation is already running".into());
+    }
+    let busy = Busy(state.busy.clone());
+    let shared = state.app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
+        shared
+            .lock()
+            .map_err(|_| "State lock failed".to_string())?
+            .preview_document(&id, &review)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 async fn discover_columns(library: String) -> Result<Vec<curator_core::model::Column>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         curator_core::library::discover(&library).map_err(|e| e.to_string())
@@ -53,6 +75,36 @@ async fn dispatch(
             };
             match action.as_str() {
                 "snapshot" => {}
+                "repair_prepare" => app
+                    .prepare_missing(
+                        &serde_json::from_value::<Vec<i64>>(payload.clone())
+                            .map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "repair_apply" => app
+                    .apply_repairs(
+                        serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "research" => app
+                    .discover_sites(
+                        string("query")?,
+                        payload["refresh"].as_bool().unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())?,
+                "source_verify" => app
+                    .verify_document(
+                        string("id")?,
+                        serde_json::from_value(payload["review"].clone())
+                            .map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "source_revoke" => app
+                    .revoke_document(string("id")?)
+                    .map_err(|e| e.to_string())?,
+                "metadata_web_search" => app
+                    .open_duckduckgo(payload["book_id"].as_i64().ok_or("Choose a book")?)
+                    .map_err(|e| e.to_string())?,
                 "metadata_settings" => app
                     .configure_metadata(
                         serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?,
@@ -215,7 +267,11 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![dispatch, discover_columns])
+        .invoke_handler(tauri::generate_handler![
+            dispatch,
+            discover_columns,
+            preview_source
+        ])
         .run(tauri::generate_context!())
         .expect("Unable to start Calibre Curator");
 }

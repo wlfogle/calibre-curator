@@ -1,10 +1,13 @@
 pub mod ai;
 mod ai_app;
 pub mod app;
+pub mod documents;
 pub mod library;
 pub mod matching;
 pub mod metadata;
 pub mod model;
+pub mod repair;
+pub mod research;
 pub mod sources;
 pub mod store;
 pub mod synopsis;

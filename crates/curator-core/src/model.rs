@@ -99,6 +99,7 @@ pub struct Reference {
     pub edition: String,
     pub ai_provenance: Option<crate::ai::AiProvenance>,
     pub field_mask: Option<[bool; 4]>,
+    pub document_verification: Option<String>,
 }
 impl Default for Reference {
     fn default() -> Self {
@@ -120,6 +121,7 @@ impl Default for Reference {
             edition: "any".into(),
             ai_provenance: None,
             field_mask: None,
+            document_verification: None,
         }
     }
 }
@@ -147,6 +149,9 @@ pub struct AppData {
     pub metadata_providers: Vec<crate::metadata::Provider>,
     pub metadata_results: Vec<crate::metadata::LookupResult>,
     pub synopsis_drafts: Vec<crate::synopsis::SynopsisDraft>,
+    pub source_reviews: BTreeMap<String, crate::documents::SourceReview>,
+    pub research_runs: Vec<crate::research::ResearchRun>,
+    pub repair_notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -161,6 +166,16 @@ pub struct Proposal {
     pub pinned: [bool; 4],
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BibliographicValues {
+    pub publisher: Option<String>,
+    pub identifiers: BTreeMap<String, String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BibliographicEdit {
+    pub before: BibliographicValues,
+    pub after: BibliographicValues,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
     pub id: i64,
@@ -172,6 +187,8 @@ pub struct Change {
     pub sources: Vec<String>,
     #[serde(default)]
     pub comments: Option<CommentEdit>,
+    #[serde(default)]
+    pub bibliography: Option<BibliographicEdit>,
     #[serde(default)]
     pub authors: Vec<String>,
     #[serde(default)]

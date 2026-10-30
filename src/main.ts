@@ -7,7 +7,7 @@ type Series = { name: string | null; index: number | null };
 type Hierarchy = [Series, Series, Series, Series];
 type Citation={segment:number;quote:string};
 type Provider={name:string;version:string;identify:boolean;enabled:boolean};
-type MetadataSettings={fetch_binary:string;providers:string[];timeout_seconds:number;cache_days:number};
+type MetadataSettings={fetch_binary:string;search_all:boolean;providers:string[];timeout_seconds:number;cache_days:number};
 type LookupResult={id:string;library:string;book_id:number;book_uuid:string;provider:Provider;fetched_at:number;cached:boolean;
   match_status:string;note:string;identity_confirmed:boolean;source_id:string|null;
   metadata:{title:string;authors:string[];identifiers:Record<string,string>;publisher:string|null;description:string;url:string|null}|null};
@@ -28,6 +28,9 @@ type Reference = { id:string; title:string; authors:string[]; aliases:string[]; 
   ai_provenance?:{model:string;digest:string;source_hash:string;citations:Citation[];extracted_slots:number[]}|null };
 type Source = { id:string; name:string; location:string; sha256:string; kind:string;
   segments:{ordinal:number;kind:string;text:string}[] };
+type SourceReview={fingerprint:string;universe:string;authors:string[];aliases:Record<string,string>};
+type DocumentPreview={entries:{reference:Reference;status:string;matches:number}[];skipped:number[]};
+type ResearchRun={query:string;fetched_at:number;cached:boolean;status:string;notes:string[];leads:{url:string;title:string;engine:string}[]};
 type Proposal = { book:Book; status:string; reason:string; reference_id:string|null;
   after:Hierarchy|null; changed:number[]; blocked:boolean; pinned:boolean[] };
 type Operation = { id:string; created:number; library:string; phase:string; kind:string;metadata_field?:string;
@@ -37,11 +40,12 @@ type Alias = { id:string; existing_series:string; universe:string };
 type Snapshot = { workspace:string; data:{settings:Settings; references:Reference[]; sources:Source[];aliases:Alias[];
   ai_settings:AiSettings;ai_models:{name:string;digest:string;size:number;usable:boolean;reason:string}[];
   ai_runs:AiRun[];ai_decisions:Record<string,{status:string;reference_id:string|null}>;
-  metadata_settings:MetadataSettings;metadata_providers:Provider[];metadata_results:LookupResult[];synopsis_drafts:SynopsisDraft[]};
+  metadata_settings:MetadataSettings;metadata_providers:Provider[];metadata_results:LookupResult[];synopsis_drafts:SynopsisDraft[];
+  source_reviews:Record<string,SourceReview>;research_runs:ResearchRun[];repair_notes:string[]};
   proposals:Proposal[]; history:Operation[]; issues:Record<string,string> };
 
 let state:Snapshot;
-let tab="Library", busy=false, query="", status="", page=0;
+let tab="Repair", busy=false, query="", status="", page=0;
 let universeFilter:string|null=null;
 let aiSelection={source_id:"",start:1,end:1,universe:""};
 let synopsisBook=0;
@@ -93,11 +97,25 @@ function render() {
   window.scrollTo(0,0);
   heading.replaceChildren(el("div","Calibre Curator","brand"),
     el("div","Local rules. Source-backed metadata. No AI credits.","muted"));
-  nav.replaceChildren(...["Library","Universes","References & sources","AI assistant","Synopses","Review","History","Diagnostics","Settings"].map(name=>
+  nav.replaceChildren(...["Repair","Sources","History","Advanced"].map(name=>
     button(name,()=>{tab=name;if(name==="Library")universeFilter=null;render();},tab===name?"active":"")));
+  if(!["Repair","Sources","History"].includes(tab)) {
+    const tools=el("select");
+    for(const name of ["Advanced","Library","Universes","References & sources","AI assistant","Synopses","Review","Diagnostics","Settings"]) {
+      const option=el("option",name);option.value=name;option.selected=tab===name;tools.append(option);
+    }
+    tools.onchange=()=>{tab=tools.value;render();};nav.append(tools);
+  }
   content.replaceChildren();
   if(!state)return;
-  if(tab==="Library")audit();
+  if(tab==="Repair")repair();
+  else if(tab==="Sources")sourceWorkspace();
+  else if(tab==="Advanced") {
+    title("Advanced tools","Normal repair uses the Repair and Sources screens. These tools expose individual rules, model settings and diagnostics.");
+    for(const name of ["Library","Universes","References & sources","AI assistant","Synopses","Review","Diagnostics","Settings"])
+      content.append(button(name,()=>{tab=name;render();}));
+  }
+  else if(tab==="Library")audit();
   else if(tab==="Universes")universes();
   else if(tab==="AI assistant")aiWorkspace();
   else if(tab==="Synopses")synopses();
@@ -109,6 +127,185 @@ function render() {
   requestAnimationFrame(()=>document.documentElement.style.setProperty("--nav-height",`${nav.offsetHeight}px`));
 }
 function title(text:string,description:string) {content.append(el("h1",text),el("p",description,"muted"));}
+function sourceWorkspace() {
+  title("Your reference sources","Add a file or website once. Verify its book order and series mappings once; future scans reuse them.");
+  content.append(button("Add reference file",async()=>{
+    const path=await open({multiple:false,filters:[{name:"References",extensions:["odt","html","htm","csv","json"]}]});
+    if(typeof path==="string")await act("import",{location:path,universe:"",remote:false},"Source added. Verify its order and mappings below.");
+  },"primary"),button("Add website",()=>importDialog("",true)));
+  for(const source of state.data.sources.filter(s=>s.kind!=="calibre-metadata")) {
+    const card=el("section","","card"),verified=state.data.source_reviews[source.id];
+    card.append(el("h2",source.name),el("p",source.location),el("p",verified?`Verified for ${verified.universe}`:"Not yet verified"),
+      button(verified?"Review source mappings":"Verify source",()=>verifySourceDialog(source)));
+    if(verified)card.append(button("Revoke verification",async()=>{
+      if(await confirmAction("Revoke this source?","Its document-generated corrections stop being eligible. Existing library metadata is not changed."))
+        await act("source_revoke",{id:source.id});
+    }));
+    const details=el("details");details.append(el("summary","Source text and provenance"),el("small",`SHA-256: ${source.sha256}`),
+      el("pre",source.segments.map(s=>`${s.ordinal}: ${s.text}`).join("\n")));card.append(details);content.append(card);
+  }
+  const discovery=el("details");discovery.append(el("summary","Find additional author or series websites (DuckDuckGo)"));
+  const query=field("Author, series, or research query");
+  discovery.append(query.wrapper,button("Find websites",async()=>{
+    if(await confirmAction("Search DuckDuckGo?","Send only this query to DuckDuckGo. Returned links are unverified leads; a blocked search does not prevent local-source repairs."))
+      await act("research",{query:query.input.value,refresh:false},"Discovery finished. Links are leads, not verified sources.");
+  }));
+  for(const run of state.data.research_runs) {
+    const item=el("details");item.open=run===state.data.research_runs[0];
+    item.append(el("summary",`${run.query} · ${run.status}${run.cached?" · cached":""}`),
+      el("small",new Date(run.fetched_at*1000).toLocaleString()));
+    for(const note of run.notes)item.append(el("p",note,"warning"));
+    for(const lead of run.leads) {
+      const row=el("section");row.append(el("strong",lead.title),el("p",`${lead.url} · ${lead.engine} · unverified lead`));
+      if(lead.url.startsWith("https://"))row.append(button("Fetch as reference",()=>importDialog(lead.url,true)));
+      else row.append(el("small","HTTP-only lead; supply a verified public HTTPS destination to fetch."));
+      item.append(row);
+    }
+    discovery.append(item);
+  }
+  content.append(discovery);
+}
+function verifySourceDialog(source:Source) {
+  const dialog=el("dialog"),box=el("div","","modal wide"),existing=state.data.source_reviews[source.id];
+  const universe=field("Main series / universe",existing?.universe??""),
+    authors=field("Author context (separate multiple authors with |)",existing?.authors.join(" | ")??"");
+  const aliases=el("textarea");aliases.rows=3;
+  aliases.value=Object.entries(existing?.aliases??{}).map(([a,b])=>`${a} = ${b}`).join("\n");
+  const aliasLabel=el("label");aliasLabel.append(el("span","Optional subseries name aliases, one per line: source label = preferred name"),aliases);
+  const report=el("div");let checked:SourceReview|null=null;
+  const config=():SourceReview=>{
+    const mapping:Record<string,string>={};
+    for(const line of aliases.value.split("\n").filter(s=>s.trim())) {
+      const at=line.indexOf("=");if(at<1||!line.slice(at+1).trim())throw new Error("Aliases need source label = preferred name.");
+      mapping[line.slice(0,at).trim()]=line.slice(at+1).trim();
+    }
+    return {fingerprint:"",universe:universe.input.value.trim(),authors:authors.input.value.split("|").map(s=>s.trim()).filter(Boolean),aliases:mapping};
+  };
+  const verify=button("Verify this source and use its mappings",async()=>{
+    if(!checked||JSON.stringify(checked)!==JSON.stringify(config()))throw new Error("Preview the current settings first.");
+    await act("source_verify",{id:source.id,review:checked},"Source verified. Matching corrections are ready in Repair; no library writes.");
+    dialog.close();
+  },"primary");verify.disabled=true;
+  for(const input of [universe.input,authors.input,aliases])input.oninput=()=>{checked=null;verify.disabled=true;};
+  box.append(el("h2",`Verify ${source.name}`),universe.wrapper,authors.wrapper,aliasLabel,
+    el("p","Main-series positions follow every listed book and novella, including books you do not own. Numbered subseries retain their independent order. Headings are not subseries; unsupported fields stay unchanged."),
+    button("Preview mappings",async()=>{
+      checked=null;verify.disabled=true;const value=config();
+      const preview=await invoke<DocumentPreview>("preview_source",{id:source.id,review:value});
+      report.replaceChildren(el("p",`${preview.entries.length} work entries; ${preview.skipped.length} non-entry segments excluded. Check the exclusions before verifying.`));
+      const table=el("table"),head=el("tr");["Work","Main series","Subseries","Library match"].forEach(s=>head.append(el("th",s)));table.append(head);
+      for(const entry of preview.entries) {
+        const row=el("tr"),r=entry.reference;
+        row.append(el("td",r.title),el("td",series(r.hierarchy[0])),el("td",r.hierarchy.slice(1).map(series).join(" / ")),el("td",entry.status));table.append(row);
+      }
+      report.append(table);
+      const skipped=el("details");skipped.append(el("summary","Excluded source text"),
+        el("pre",source.segments.filter(s=>preview.skipped.includes(s.ordinal)).map(s=>`${s.ordinal}: ${s.text}`).join("\n")));
+      report.append(skipped);
+      checked=value;verify.disabled=!preview.entries.length;
+    }),report,verify,button("Cancel",()=>dialog.close()));
+  dialog.append(box);document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();
+}
+function repair() {
+  title("Repair your library","Scan → use verified sources → preview and apply fixes. Existing metadata is preserved when filling missing fields.");
+  content.append(el("p",state.data.settings.library),
+    button("1. Scan library",()=>act("scan",{},"Scan complete. Saved verified sources have been matched; no library changes."),"primary"),
+    button("Manage reference sources",()=>{tab="Sources";render();}),
+    button("Library settings",()=>{tab="Settings";render();}));
+  if(!state.proposals.length) {content.append(el("p","Scan your library to begin."));return;}
+  const eligible=state.proposals.filter(p=>!p.blocked&&p.after&&p.changed.some(i=>!p.pinned[i]));
+  const missing=state.proposals.map(p=>p.book).filter(b=>!b.authors.some(a=>normalized(a)==="calibre")&&
+    !(b.formats.length&&b.formats.every(f=>f==="CSV"||f==="XML"))&&(!b.has_comments||!b.publisher?.trim()||!Object.keys(b.identifiers).length));
+  content.append(el("p",`${state.proposals.length} books · ${eligible.length} supported series corrections · ${missing.length} books missing synopsis, publisher or identifiers`));
+  const filter=field("Filter books (optional)"),area=el("div");
+  content.append(filter.wrapper,button("2. Find missing metadata",async()=>{
+    const needle=filter.input.value.toLowerCase();
+    const books=missing.filter(b=>`${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle)).slice(0,20);
+    if(!books.length)throw new Error("No missing metadata in the current filter.");
+    if(await confirmAction(`Look up ${books.length} books?`,
+      "Share their titles, authors and recognized identifiers with all enabled Calibre identification providers (or your saved custom selection). No ebook files are uploaded. This can take several minutes per book. Nothing is written to your library."))
+      await act("repair_prepare",books.map(b=>b.id),"Provider lookup finished. Review fills below; unavailable or mismatched evidence is held.");
+  }),el("small","Online lookups run in batches of up to 20 books; local series matching covers the whole library."),area);
+  for(const note of state.data.repair_notes)content.append(el("p",note,"warning"));
+  const seriesPicks=new Set(eligible.map(p=>p.book.id));
+  type Fill={lookup_id:string;book:Book;synopsis:boolean;publisher:boolean;identifiers:boolean};
+  const fills=new Map<number,Fill>();
+  const excludedFills=new Set<number>();
+  function rows() {
+    const needle=filter.input.value.toLowerCase();
+    area.replaceChildren(el("h2","3. Preview fixes"));
+    const seriesBox=el("details");seriesBox.open=true;seriesBox.append(el("summary",`Series / subseries corrections (${eligible.length})`));
+    seriesBox.append(checkbox("Select all supported series corrections",seriesPicks.size===eligible.length,v=>{
+      seriesPicks.clear();if(v)for(const p of eligible)seriesPicks.add(p.book.id);rows();
+    }));
+    for(const p of eligible.filter(p=>`${p.book.title} ${p.book.authors.join(" ")}`.toLowerCase().includes(needle))) {
+      const card=el("details");card.append(el("summary",`${p.book.title} — ${p.book.authors.join(" & ")}`),
+        checkbox("Include these unlocked series corrections",seriesPicks.has(p.book.id),v=>{if(v)seriesPicks.add(p.book.id);else seriesPicks.delete(p.book.id);}),
+        el("p","Current"),hierarchy(p.book.hierarchy),el("p","Proposed (protected fields remain unchanged)"),
+        hierarchy(p.after!.map((v,i)=>p.pinned[i]?p.book.hierarchy[i]:v) as Hierarchy),el("p",p.reason));
+      seriesBox.append(card);
+    }
+    area.append(seriesBox,el("h2","Missing metadata fills"));
+    for(const b of missing.filter(b=>`${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle)).filter(b=>
+      state.data.metadata_results.some(r=>r.library===state.data.settings.library&&r.book_uuid===b.uuid)).slice(0,20)) {
+      const results=state.data.metadata_results.filter(r=>r.library===state.data.settings.library&&r.book_uuid===b.uuid);
+      if(!results.length)continue;
+      const card=el("section","","card"),choices=el("select"),preview=el("div");
+      const none=el("option","Leave unchanged");none.value="";choices.append(none);
+      for(const r of results) {
+        const option=el("option",`${r.provider.name} · ${r.match_status}`);option.value=r.id;
+        option.disabled=r.match_status!=="compatible"||!r.metadata;option.selected=fills.get(b.id)?.lookup_id===r.id;choices.append(option);
+      }
+      if(!fills.has(b.id)&&!excludedFills.has(b.id)) {
+        const compatible=results.filter(r=>r.match_status==="compatible"&&r.metadata);
+        const targets=new Set(compatible.map(r=>JSON.stringify([r.metadata!.publisher,r.metadata!.identifiers,r.metadata!.description])));
+        if(targets.size===1&&compatible[0])choices.value=compatible[0].id;
+      }
+      const show=()=>{
+        const prior=fills.get(b.id);
+        fills.delete(b.id);preview.replaceChildren();const r=results.find(r=>r.id===choices.value),m=r?.metadata;
+        if(!r||!m){excludedFills.add(b.id);return;}
+        excludedFills.delete(b.id);
+        const f:Fill=prior?.lookup_id===r.id?prior:{lookup_id:r.id,book:b,synopsis:true,publisher:true,identifiers:true};fills.set(b.id,f);
+        preview.append(el("p",`${m.title} — ${m.authors.join(" & ")}`),el("p",r.note,"warning"));
+        const descriptionBytes=new TextEncoder().encode(m.description).length;
+        if(!b.has_comments&&descriptionBytes>=80&&descriptionBytes<=4000&&m.description.split(/\s+/).length<=220) {
+          preview.append(checkbox("Fill missing synopsis",f.synopsis,v=>f.synopsis=v),el("p",m.description));
+        } else {f.synopsis=false;if(!b.has_comments)preview.append(el("p","No short usable description. Synopsis stays unchanged; advanced tools can prepare a shortened draft."));}
+        if(!b.publisher?.trim()&&m.publisher?.trim()&&new TextEncoder().encode(m.publisher.trim()).length<=500) {
+          preview.append(checkbox(`Fill publisher: ${m.publisher}`,f.publisher,v=>f.publisher=v));
+        } else f.publisher=false;
+        const added=Object.fromEntries(Object.entries(m.identifiers).filter(([k])=>!b.identifiers[k]?.trim()));
+        if(Object.keys(added).length) {
+          preview.append(checkbox(`Fill missing identifiers: ${JSON.stringify(added)}`,f.identifiers,v=>f.identifiers=v));
+        } else f.identifiers=false;
+        preview.append(el("small","Including this result in Apply confirms that you reviewed the displayed work, edition and field values."));
+      };
+      choices.onchange=show;
+      card.append(el("h3",b.title),choices,preview);
+      const diagnostics=el("details");diagnostics.append(el("summary",`${results.length} provider outcomes`));
+      for(const r of results)diagnostics.append(el("p",`${r.provider.name}: ${r.match_status} — ${r.note}`));
+      card.append(diagnostics);area.append(card);
+      if(choices.value)show();
+    }
+  }
+  filter.input.oninput=rows;rows();
+  content.append(button("Apply selected fixes",async()=>{
+    const changes=eligible.filter(p=>seriesPicks.has(p.book.id)).map(p=>({
+      id:p.book.id,uuid:p.book.uuid,title:p.book.title,before:p.book.hierarchy,
+      after:p.after!.map((v,i)=>p.pinned[i]?p.book.hierarchy[i]:v),evidence:"",sources:[],authors:p.book.authors,identifiers:p.book.identifiers
+    }));
+    const chosen=[...fills.values()].filter(f=>f.synopsis||f.publisher||f.identifiers);
+    if(!changes.length&&!chosen.length)throw new Error("No fixes selected.");
+    if(!await confirmAction(`Apply ${changes.length} series corrections and ${chosen.length} metadata fills?`,
+      `Library: ${state.data.settings.library}. Confirm the displayed source matches and editions, and close Calibre first. Only selected fixes are written. This batch has one backup, verification journal and guarded undo in History. Interrupted writes require guarded recovery.`))return;
+    await act("repair_apply",{series:changes,fills:chosen},"Selected fixes applied and verified. The batch backup and guarded undo are in History.");
+  },"primary"));
+  const held=el("details");held.append(el("summary","Items needing attention"));
+  for(const p of state.proposals.filter(p=>p.blocked&&`${p.book.title} ${p.book.authors.join(" ")}`.toLowerCase().includes(filter.input.value.toLowerCase())).slice(0,200))
+    held.append(el("p",`${p.book.title}: ${p.reason}`));
+  content.append(held);
+}
 function candidateUniverse(p:Proposal):string {
   const alias=state.data.aliases.find(a=>p.book.hierarchy.some(v=>
     v.name?.trim().toLowerCase()===a.existing_series.trim().toLowerCase()));
@@ -437,6 +634,10 @@ function settings() {
 function synopses() {
   title("Metadata lookup & synopses","Search selected Calibre providers, confirm the work/edition, then create and approve a synopsis draft. Existing Comments and all series fields remain protected.");
   const config=structuredClone(state.data.metadata_settings),settingsBox=el("details");
+  const available=state.data.metadata_providers.filter(p=>p.enabled&&p.identify);
+  const scope=config.search_all?`All enabled identification providers${available.length?` (${available.length} last discovered)`:" — discovered at lookup"}`:
+    `Custom provider selection: ${config.providers.join(", ")}`;
+  content.append(el("p",`Metadata search: ${scope}. Web search: DuckDuckGo.`,"warning"));
   settingsBox.open=state.data.metadata_providers.length===0;
   settingsBox.append(el("summary","Metadata provider settings"));
   const binary=field("Absolute fetch-ebook-metadata executable",config.fetch_binary),
@@ -448,10 +649,14 @@ function synopses() {
     config.providers.map(name=>({name,version:"discover to verify",identify:true,enabled:true}));
   for(const p of catalogue) {
     const option=el("option",`${p.name} · ${p.version}${!p.identify?" · covers only":!p.enabled?" · disabled in Calibre":""}`);
-    option.value=p.name;option.selected=config.providers.includes(p.name);option.disabled=!p.identify||!p.enabled;providers.append(option);
+    option.value=p.name;option.selected=config.search_all?(p.enabled&&p.identify):config.providers.includes(p.name);option.disabled=!p.identify||!p.enabled;providers.append(option);
   }
-  const providerLabel=el("label");providerLabel.append(el("span","Select 1–3 providers (Ctrl-click for multiple)"),providers);
-  settingsBox.append(binary.wrapper,timeout.wrapper,days.wrapper,providerLabel,
+  providers.disabled=config.search_all;
+  const providerLabel=el("label");providerLabel.append(el("span","Custom selection (no three-source limit; Ctrl-click for multiple)"),providers);
+  settingsBox.append(checkbox("Search ALL enabled identification providers",config.search_all,value=>{
+    config.search_all=value;providers.disabled=value;
+    for(const option of Array.from(providers.options))option.selected=value?!option.disabled:config.providers.includes(option.value);
+  }),binary.wrapper,timeout.wrapper,days.wrapper,providerLabel,
     button("Discover Calibre providers",()=>act("metadata_discover",{},"Provider capabilities and enabled status loaded; no lookup performed.")),
     button("Save metadata settings",()=>{
       config.fetch_binary=binary.input.value.trim();config.timeout_seconds=Number(timeout.input.value);
@@ -488,11 +693,17 @@ function synopses() {
   const lookup=async(refresh:boolean)=>{
     const book=eligible.find(b=>b.id===synopsisBook);if(!book)throw new Error("Choose a book first.");
     if(!await confirmAction("Search online metadata sources?",
-      `Send the title, authors and recognized identifiers for "${book.title}" to ${state.data.metadata_settings.providers.join(", ")} only. No ebook files or library inventory are sent; providers may require configured credentials or impose limits.`))return;
+      `Send the title, authors and recognized identifiers for "${book.title}" to ${state.data.metadata_settings.search_all?"ALL enabled Calibre identification providers":state.data.metadata_settings.providers.join(", ")}. Every provider is searched separately even if another fails or finds a result. No ebook files or inventory are sent; a full search may take several minutes.`))return;
     await act("metadata_lookup",{book_id:book.id,refresh},"Lookup finished. Review each provider separately; no identity was automatically confirmed.");
   };
-  content.append(search.wrapper,books,bookInfo,button("Look up selected book",()=>lookup(false),"primary"),
-    button("Refresh lookup (ignore cache)",()=>lookup(true)),results);
+  content.append(search.wrapper,books,bookInfo,button(config.search_all?"Search all metadata providers":"Look up selected book",()=>lookup(false),"primary"),
+    button("Refresh lookup (ignore cache)",()=>lookup(true)),
+    button("Search web with DuckDuckGo",async()=>{
+      const book=eligible.find(b=>b.id===synopsisBook);if(!book)throw new Error("Choose a book first.");
+      if(!await confirmAction("Open DuckDuckGo web search?",
+        `Search for "${book.title}", its authors and ISBN in your default browser. This is source discovery only: results/snippets are not automatically imported, trusted or used to generate metadata.`))return;
+      await act("metadata_web_search",{book_id:book.id},"DuckDuckGo opened in your browser. Verify original source pages; search snippets are not evidence.");
+    }),results);
   const drafts=el("div");content.append(drafts);
   function lookupCards() {
     results.replaceChildren(el("h2","Provider results"));

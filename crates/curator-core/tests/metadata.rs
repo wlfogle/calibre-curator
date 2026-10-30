@@ -30,6 +30,115 @@ fn book() -> Book {
     }
 }
 #[test]
+fn all_sources_have_no_three_provider_limit_and_continue_after_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture(temp.path());
+    let mut providers: Vec<Provider> = (0..6)
+        .map(|i| Provider {
+            name: format!("Provider{i}"),
+            version: "1".into(),
+            enabled: true,
+            identify: true,
+        })
+        .collect();
+    providers.push(Provider {
+        name: "Disabled".into(),
+        version: "1".into(),
+        enabled: false,
+        identify: true,
+    });
+    providers.push(Provider {
+        name: "Cover-only".into(),
+        version: "1".into(),
+        enabled: true,
+        identify: false,
+    });
+    let marker = format!(
+        "CURATOR_PLUGINS:{}",
+        serde_json::to_string(&providers).unwrap()
+    );
+    executable(
+        Path::new(&app.data.settings.calibre_binary),
+        &format!("#!/usr/bin/python3\nprint({marker:?})\n"),
+    );
+    let xml = opf("Sample Book", "Test Author");
+    executable(Path::new(&app.data.metadata_settings.fetch_binary),&format!(
+        "#!/usr/bin/python3\nimport sys\nprovider=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--allowed-plugin='))\nif provider=='Provider0':\n sys.stderr.write('PRIVATE_PROVIDER_DIAGNOSTIC')\n raise SystemExit(1)\nprint({xml:?})\n"));
+    let mut settings = app.data.metadata_settings.clone();
+    settings.search_all = true;
+    settings.providers = vec!["obsolete selection".into()];
+    app.configure_metadata(settings).unwrap();
+    app.lookup_metadata(1, false).unwrap();
+    assert_eq!(app.data.metadata_results.len(), 6);
+    assert_eq!(
+        app.data
+            .metadata_results
+            .iter()
+            .filter(|r| r.match_status == "error")
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.data
+            .metadata_results
+            .iter()
+            .filter(|r| r.match_status == "compatible")
+            .count(),
+        5
+    );
+    assert!(app
+        .data
+        .metadata_results
+        .iter()
+        .all(|r| !r.note.contains("PRIVATE_PROVIDER_DIAGNOSTIC")));
+    assert_eq!(app.store.load().unwrap().metadata_results.len(), 6);
+    let settings = MetadataSettings {
+        search_all: false,
+        providers: providers
+            .iter()
+            .filter(|p| p.enabled && p.identify)
+            .map(|p| p.name.clone())
+            .collect(),
+        ..Default::default()
+    };
+    app.configure_metadata(settings.clone()).unwrap();
+    assert_eq!(select_providers(&settings, &providers).unwrap().len(), 6);
+}
+#[test]
+fn legacy_google_only_settings_default_to_all_and_duckduckgo_is_web_search() {
+    let settings: MetadataSettings =
+        serde_json::from_value(serde_json::json!({"providers":["Google"]})).unwrap();
+    assert!(settings.search_all);
+    let providers = vec![Provider {
+        name: "Other provider".into(),
+        version: "1".into(),
+        enabled: true,
+        identify: true,
+    }];
+    assert_eq!(
+        select_providers(&settings, &providers).unwrap()[0].name,
+        "Other provider"
+    );
+    let mut query = book();
+    query.title = "Sample Book & \"quoted\" --text".into();
+    query
+        .identifiers
+        .insert("isbn".into(), "9780553296129".into());
+    query.uuid = "PRIVATE_LIBRARY_UUID".into();
+    let url = duckduckgo_url(&query).unwrap();
+    assert_eq!(url.scheme(), "https");
+    assert_eq!(url.host_str(), Some("duckduckgo.com"));
+    let text = url
+        .query_pairs()
+        .find(|p| p.0 == "q")
+        .unwrap()
+        .1
+        .to_string();
+    assert!(text.contains(&query.title));
+    assert!(text.contains("9780553296129"));
+    assert!(!url.as_str().contains("PRIVATE_LIBRARY_UUID"));
+}
+#[test]
 fn identifiers_do_not_override_different_work_titles() {
     let mut query = book();
     query

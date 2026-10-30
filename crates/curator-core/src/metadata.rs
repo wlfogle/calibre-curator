@@ -25,15 +25,66 @@ pub const PROVIDER_CODE:&str="import json; from calibre.customize.ui import all_
 #[serde(default)]
 pub struct MetadataSettings {
     pub fetch_binary: String,
+    pub search_all: bool,
     pub providers: Vec<String>,
     pub timeout_seconds: u64,
     pub cache_days: u64,
+}
+pub fn select_providers(
+    settings: &MetadataSettings,
+    providers: &[Provider],
+) -> Result<Vec<Provider>> {
+    let mut names = std::collections::BTreeSet::new();
+    let chosen = if settings.search_all {
+        providers
+            .iter()
+            .filter(|p| p.enabled && p.identify && names.insert(p.name.clone()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        settings
+            .providers
+            .iter()
+            .filter(|name| names.insert((*name).clone()))
+            .map(|name| {
+                providers
+                    .iter()
+                    .find(|p| &p.name == name && p.enabled && p.identify)
+                    .cloned()
+                    .with_context(|| {
+                        format!(
+                            "{name} is not an enabled identify provider; configure it in Calibre"
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    if chosen.is_empty() {
+        bail!(
+            "No enabled identification providers selected; discover/configure providers in Calibre"
+        );
+    }
+    Ok(chosen)
+}
+pub fn duckduckgo_url(book: &Book) -> Result<reqwest::Url> {
+    if book.title.trim().is_empty() || book.title.len() > 1000 {
+        bail!("Book title is missing or too long for web search");
+    }
+    let mut query = format!("\"{}\" {}", book.title, book.authors.join(" "));
+    if let Some(isbn) = safe_ids(&book.identifiers).get("isbn") {
+        query.push(' ');
+        query.push_str(isbn);
+    }
+    let mut url = reqwest::Url::parse("https://duckduckgo.com/")?;
+    url.query_pairs_mut().append_pair("q", &query);
+    Ok(url)
 }
 impl Default for MetadataSettings {
     fn default() -> Self {
         Self {
             fetch_binary: "/usr/bin/fetch-ebook-metadata".into(),
-            providers: vec!["Google".into()],
+            search_all: true,
+            providers: Vec::new(),
             timeout_seconds: 15,
             cache_days: 7,
         }

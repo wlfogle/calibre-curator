@@ -102,8 +102,10 @@ impl Store {
         Ok(())
     }
     pub fn clear_ai_cache(&self) -> Result<()> {
-        self.connection
-            .execute("DELETE FROM ai_cache WHERE key NOT LIKE 'metadata:%'", [])?;
+        self.connection.execute(
+            "DELETE FROM ai_cache WHERE key NOT LIKE 'metadata:%' AND key NOT LIKE 'research:%'",
+            [],
+        )?;
         Ok(())
     }
 }

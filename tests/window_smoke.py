@@ -111,6 +111,7 @@ def main():
                              "type", "--clearmodifiers", value], check=True)
 
         wait(lambda: locate("4 books"))
+        click("Advanced")
         click("assistant")
         wait(lambda:locate("Optional Ollama assistant"))
         click("List installed models",scroll=True)
@@ -155,7 +156,7 @@ def main():
                 "native Ollama model discovery","explicit AI enablement","source excerpt preview",
                 "real local extraction","unapproved unbound partial-field draft","database unchanged"]}))
             return
-        click("Library")
+        click("Advanced")
         click("Universes")
         wait(lambda:locate("Universe & subseries coverage"))
         subprocess.run(["import","-window",window,str(folder/"universes.png")],check=True)

@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
         if let Some(provider) = args.get(5) {
             let mut settings = app.data.metadata_settings.clone();
             settings.providers = vec![provider.clone()];
+            settings.search_all = false;
             app.configure_metadata(settings)?;
         }
         let book = args
