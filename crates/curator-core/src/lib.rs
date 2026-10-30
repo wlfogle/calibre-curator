@@ -1,3 +1,5 @@
+pub mod ai;
+mod ai_app;
 pub mod app;
 pub mod library;
 pub mod matching;

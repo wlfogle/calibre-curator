@@ -1,3 +1,4 @@
+nav{flex-wrap:wrap}table th{top:var(--nav-height,65px)}blockquote{border-left:3px solid #52a98d;padding:10px 14px;margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere}
 :root{font-family:Inter,system-ui,sans-serif;color:#dce4ec;background:#10161e;font-size:14px;color-scheme:dark}
 *{box-sizing:border-box}body{margin:0}header{display:flex;align-items:center;gap:24px;padding:22px 30px;background:#18222e;border-bottom:1px solid #34465a}.brand{font-size:24px;font-weight:750;color:#7fd1b6}.muted,small{color:#a7b6c8}nav{display:flex;gap:6px;padding:12px 30px;background:#141e28;position:sticky;top:0;z-index:2}
 button{border:1px solid #40536a;border-radius:6px;background:#243345;color:#edf5fc;padding:9px 13px;cursor:pointer;margin:3px}button:hover{background:#334a61}button.active,button.primary{background:#216853;border-color:#52a98d}button.danger{background:#743535}button:disabled{opacity:.5;cursor:wait}

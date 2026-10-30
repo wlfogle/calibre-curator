@@ -5,11 +5,19 @@ import "./style.css";
 
 type Series = { name: string | null; index: number | null };
 type Hierarchy = [Series, Series, Series, Series];
+type Citation={segment:number;quote:string};
+type AiSettings={enabled:boolean;endpoint:string;model:string;allow_lan:boolean;timeout_seconds:number};
+type AiCandidate={title:string;authors:string[];edition:string;notes:string;citations:Citation[];
+  fields:{slot:number;name:string;index:number|null;citations:Citation[]}[]};
+type AiRun={id:string;source_id:string;source_hash:string;model:string;digest:string;prompt_version:string;
+  generated_at:number;cached:boolean;identity_context_expansions:number;input_bytes:number;prompt_tokens:number;output_tokens:number;duration_ms:number;
+  fingerprints:string[];extraction:{status:string;explanation:string;warnings:string[];candidates:AiCandidate[]}};
 type Book = { id:number; uuid:string; title:string; authors:string[]; identifiers:Record<string,string>;
   hierarchy:Hierarchy; publisher:string|null; has_comments:boolean; formats:string[] };
 type Reference = { id:string; title:string; authors:string[]; aliases:string[]; identifiers:Record<string,string>;
   book_uuids:string[]; hierarchy:Hierarchy; source_id:string; evidence:string; approved:boolean;
-  origin:string; coverage:string; before:string[]; fixed:boolean; edition:string };
+  origin:string; coverage:string; before:string[]; fixed:boolean; edition:string;field_mask?:boolean[]|null;
+  ai_provenance?:{model:string;digest:string;source_hash:string;citations:Citation[];extracted_slots:number[]}|null };
 type Source = { id:string; name:string; location:string; sha256:string; kind:string;
   segments:{ordinal:number;kind:string;text:string}[] };
 type Proposal = { book:Book; status:string; reason:string; reference_id:string|null;
@@ -18,12 +26,15 @@ type Operation = { id:string; created:number; library:string; phase:string; kind
   backup:string|null; error:string|null; changes:unknown[]; verification:unknown };
 type Settings = { library:string; columns:[string,string,string]; calibre_binary:string };
 type Alias = { id:string; existing_series:string; universe:string };
-type Snapshot = { workspace:string; data:{settings:Settings; references:Reference[]; sources:Source[];aliases:Alias[]};
+type Snapshot = { workspace:string; data:{settings:Settings; references:Reference[]; sources:Source[];aliases:Alias[];
+  ai_settings:AiSettings;ai_models:{name:string;digest:string;size:number;usable:boolean;reason:string}[];
+  ai_runs:AiRun[];ai_decisions:Record<string,{status:string;reference_id:string|null}>};
   proposals:Proposal[]; history:Operation[]; issues:Record<string,string> };
 
 let state:Snapshot;
 let tab="Library", busy=false, query="", status="", page=0;
 let universeFilter:string|null=null;
+let aiSelection={source_id:"",start:1,end:1,universe:""};
 const selected=new Map<number,Set<number>>();
 const root=document.querySelector<HTMLDivElement>("#app")!;
 const heading=document.createElement("header"), nav=document.createElement("nav"), content=document.createElement("main");
@@ -70,17 +81,19 @@ function render() {
   window.scrollTo(0,0);
   heading.replaceChildren(el("div","Calibre Curator","brand"),
     el("div","Local rules. Source-backed metadata. No AI credits.","muted"));
-  nav.replaceChildren(...["Library","Universes","References & sources","Review","History","Diagnostics","Settings"].map(name=>
+  nav.replaceChildren(...["Library","Universes","References & sources","AI assistant","Review","History","Diagnostics","Settings"].map(name=>
     button(name,()=>{tab=name;if(name==="Library")universeFilter=null;render();},tab===name?"active":"")));
   content.replaceChildren();
   if(!state)return;
   if(tab==="Library")audit();
   else if(tab==="Universes")universes();
+  else if(tab==="AI assistant")aiWorkspace();
   else if(tab==="References & sources")references();
   else if(tab==="Review")review();
   else if(tab==="History")history();
   else if(tab==="Diagnostics")diagnostics();
   else settings();
+  requestAnimationFrame(()=>document.documentElement.style.setProperty("--nav-height",`${nav.offsetHeight}px`));
 }
 function title(text:string,description:string) {content.append(el("h1",text),el("p",description,"muted"));}
 function candidateUniverse(p:Proposal):string {
@@ -104,7 +117,8 @@ function universes() {
     area.replaceChildren(el("p",`${matches.length} groups. Showing up to 100; filter to narrow.`));
     for(const [name,books] of matches.slice(0,100)) {
       const card=el("details");
-      const supported=books.filter(p=>p.reference_id&&p.after).length;
+      const supported=books.filter(p=>p.reference_id&&p.after&&
+        state.data.references.find(r=>r.id===p.reference_id)?.field_mask?.[0]!==false).length;
       const protectedCount=books.filter(p=>p.pinned.some(Boolean)).length;
       card.append(el("summary",`${name} · ${books.length} owned · ${supported} approved matches · ${books.length-supported} unresolved`));
       const refs=state.data.references.filter(r=>r.approved&&r.hierarchy[0].name===name);
@@ -209,7 +223,7 @@ function referenceEditor(original:Reference) {
   const r=structuredClone(original),dialog=el("dialog"),box=el("form","","modal wide");
   box.onsubmit=e=>e.preventDefault();
   box.append(el("h2",r.title||"New reference"),
-    el("p","Empty target fields clear existing values. Verify whole-book edition scope and independent subseries numbering before approving.","warning"));
+    el("p","Empty selected target fields clear existing values; unchecked partial-rule fields stay unchanged. Verify whole-book edition scope and subseries numbering before approving.","warning"));
   const work=field("Work title",r.title),authors=field("Authors (separate with |)",r.authors.join(" | ")),
     aliases=field("Approved title aliases (|)",r.aliases.join(" | ")),uuids=field("Explicit bound UUIDs (|)",r.book_uuids.join(" | "));
   box.append(work.wrapper,authors.wrapper,aliases.wrapper,uuids.wrapper);
@@ -219,6 +233,14 @@ function referenceEditor(original:Reference) {
       number=field("Independent number",v.index?.toString()??"","number");
     number.input.step="any";group.append(name.wrapper,number.wrapper);box.append(group);return {name,number};
   });
+  if(r.field_mask) {
+    box.append(el("p","This is a partial-field rule: unchecked fields stay unchanged on every matched record.","warning"));
+    r.field_mask.forEach((enabled,i)=>box.append(checkbox(`Use Series${i===0?"":i+1} in this reference`,enabled,v=>r.field_mask![i]=v)));
+  }
+  if(r.ai_provenance) {
+    box.append(el("p",`AI-assisted provenance: ${r.ai_provenance.model} · ${r.ai_provenance.digest}. Literal citations are checked, not factual correctness.`,"warning"),
+      inspectEvidence(r.ai_provenance.citations,state.data.sources.find(s=>s.id===r.source_id)));
+  }
   const source=el("select");source.append(el("option","New local user decision"));
   source.options[0].value="";
   for(const s of state.data.sources) {const option=el("option",`${s.kind}: ${s.name}`);option.value=s.id;option.selected=s.id===r.source_id;source.append(option);}
@@ -397,6 +419,141 @@ function settings() {
     library:library.input.value,calibre_binary:binary.input.value,columns:columns.map(c=>c.input.value.trim())
   }),"primary"),el("p",`Application workspace: ${state.workspace}`,"muted"),
   el("p","No credentials, AI API keys, Calibre passwords or paid-provider configuration are needed."));
+}
+
+function normalized(value:string) {return value.normalize("NFD").replace(/\p{M}/gu,"").toLowerCase().replace(/[^\p{L}\p{N}]/gu,"");}
+function inspectEvidence(citations:Citation[],source:Source|undefined) {
+  const details=el("details");details.append(el("summary","Inspect exact cited source text"));
+  for(const citation of citations) {
+    details.append(el("p",`Segment ${citation.segment}`),el("blockquote",citation.quote));
+    const segment=source?.segments.find(s=>s.ordinal===citation.segment);
+    const full=el("details");full.append(el("summary","Full cached segment"),el("pre",segment?.text??"Source segment unavailable"));
+    details.append(full);
+  }
+  if(source)details.append(el("small",`Source SHA-256: ${source.sha256}`));
+  return details;
+}
+function aiWorkspace() {
+  title("Optional Ollama assistant","Local, source-grounded suggestions only. No automatic downloads, cloud fallback, approval, protection changes or Calibre writes.");
+  const config=structuredClone(state.data.ai_settings),settingsBox=el("section","","card"),
+    endpoint=field("Ollama origin",config.endpoint),model=field("Installed model name",config.model),
+    timeout=field("Request timeout (15–180 seconds)",String(config.timeout_seconds),"number");
+  const models=el("datalist");models.id="ollama-models";
+  for(const m of state.data.ai_models.filter(m=>m.usable)) {
+    const option=el("option",`${(m.size/1e9).toFixed(1)} GB`);option.value=m.name;models.append(option);
+  }
+  model.input.setAttribute("list",models.id);
+  settingsBox.append(el("h2","Connection & privacy"),endpoint.wrapper,model.wrapper,models,timeout.wrapper,
+    checkbox("Enable optional Ollama suggestions",config.enabled,v=>config.enabled=v),
+    checkbox("Allow a private LAN/VPN server: selected excerpts leave this computer",config.allow_lan,v=>config.allow_lan=v),
+    button("Save AI settings",async()=>{
+      config.endpoint=endpoint.input.value.trim();config.model=model.input.value.trim();config.timeout_seconds=Number(timeout.input.value);
+      if(config.allow_lan&&!await confirmAction("Allow private-server requests?","Only explicitly selected source excerpts are sent. Trust the server operator; do not expose Ollama publicly."))return;
+      await act("ai_settings",config,"AI settings saved. No inference request was made.");
+    }),button("List installed models",()=>act("ai_models",{},"Model catalogue refreshed; no inference or downloads performed.")));
+  for(const m of state.data.ai_models)settingsBox.append(el("p",`${m.name} · ${(m.size/1e9).toFixed(2)} GB · ${m.usable?"available":m.reason}`,"muted"));
+  content.append(settingsBox);
+  const box=el("section","","card"),sources=el("select");
+  if(!state.data.sources.some(s=>s.id===aiSelection.source_id))aiSelection.source_id=state.data.sources.find(s=>s.kind==="odt")?.id??state.data.sources[0]?.id??"";
+  for(const s of state.data.sources) {const option=el("option",`${s.kind}: ${s.name}`);option.value=s.id;option.selected=s.id===aiSelection.source_id;sources.append(option);}
+  const sourceLabel=el("label");sourceLabel.append(el("span","Cached source (import in References & sources first)"),sources);
+  const start=field("First segment",String(aiSelection.start),"number"),end=field("Last segment",String(aiSelection.end),"number"),
+    universe=field("User-selected universe context (optional)",aiSelection.universe);
+  const preview=el("pre"),count=el("p");
+  const update=()=>{
+    aiSelection={source_id:sources.value,start:Number(start.input.value),end:Number(end.input.value),universe:universe.input.value.trim()};
+    const source=state.data.sources.find(s=>s.id===sources.value);
+    const segments=source?.segments.filter(s=>s.ordinal>=aiSelection.start&&s.ordinal<=aiSelection.end)??[];
+    const bytes=new TextEncoder().encode(segments.map(s=>s.text).join("")).length;
+    count.textContent=`${segments.length} selected segments · ${bytes}/12,000 UTF-8 bytes (maximum 32 segments). Only these texts and the context are sent.`;
+    preview.textContent=segments.map(s=>`${s.ordinal} [${s.kind}] ${s.text}`).join("\n\n");
+  };
+  sources.onchange=()=>{start.input.value="1";end.input.value=String(Math.min(3,state.data.sources.find(s=>s.id===sources.value)?.segments.at(-1)?.ordinal??1));update();};
+  start.input.oninput=update;end.input.oninput=update;universe.input.oninput=update;
+  box.append(el("h2","Preview exact source selection"),sourceLabel,start.wrapper,end.wrapper,universe.wrapper,count,preview);
+  const extract=async(refresh:boolean)=>{
+    update();
+    if(!state.data.ai_settings.enabled)throw new Error("Enable and save optional Ollama assistance first.");
+    if(!await confirmAction("Request cited draft suggestions?",
+      `Use ${state.data.ai_settings.model} at ${state.data.ai_settings.endpoint} for the previewed excerpts only. Cached results avoid repeat generation; literal citations do not prove chronology.`))return;
+    await act("ai_extract",{...aiSelection,refresh},"Suggestions validated and saved to the inbox. No rule approved or Calibre metadata written.");
+  };
+  box.append(button("Extract cited drafts",()=>extract(false),"primary"),button("Regenerate (ignore cache)",()=>extract(true)));
+  content.append(box);update();
+  const inbox=el("section");inbox.append(el("h2","AI review inbox"),
+    el("p","Keep a suggestion pending, dismiss it, or create an unapproved reference. Approve and apply later in the normal workflow. Cached inbox results remain reviewable when Ollama is offline."));
+  for(const run of state.data.ai_runs) {
+    const card=el("details");card.open=run===state.data.ai_runs[0];
+    const source=state.data.sources.find(s=>s.id===run.source_id);
+    card.append(el("summary",`${source?.name??"Source unavailable"} · ${run.model} · ${run.cached?"cache hit":"generated"} · ${run.extraction.status}`),
+      el("p",run.extraction.explanation),el("small",`${new Date(run.generated_at*1000).toLocaleString()} · ${run.input_bytes} input bytes · ${run.prompt_tokens} prompt / ${run.output_tokens} output tokens · ${(run.duration_ms/1000).toFixed(1)}s generation`),
+      el("small",`Model digest: ${run.digest} · ${run.prompt_version}`));
+    for(const warning of run.extraction.warnings)card.append(el("p",warning,"warning"));
+    if(run.identity_context_expansions)card.append(el("p",`Curator expanded ${run.identity_context_expansions} identity citation(s) to exact context from already-cited segments. This is backend-added context, not an additional model quotation or independent corroboration.`,"warning"));
+    run.extraction.candidates.forEach((candidate,index)=>{
+      const item=el("section","","card"),decision=state.data.ai_decisions[run.fingerprints[index]],draft=state.data.references.find(r=>r.id===decision?.reference_id);
+      item.append(el("h3",candidate.title),el("p",`${candidate.authors.join(" & ")||"Author not supplied"} · ${candidate.edition} · ${decision?.status??"pending"}`),
+        el("p",candidate.notes),el("p","Literal quote checks passed. This is not a factual-confidence score or approval.","warning"));
+      for(const f of candidate.fields)item.append(el("p",`Series${f.slot===0?"":f.slot+1}: ${f.name} · ${f.index??"number missing—review required"}`));
+      item.append(inspectEvidence([...candidate.citations,...candidate.fields.flatMap(f=>f.citations)],source));
+      const existing=state.data.references.filter(r=>normalized(r.title)===normalized(candidate.title));
+      if(existing.length)item.append(el("p",`${existing.length} existing rule(s) have this normalized title. Compare targets before adding another rule.`,"warning"));
+      if(draft)item.append(button("Open existing reference",()=>referenceEditor(draft)));
+      else if(decision?.status==="dismissed")item.append(button("Restore suggestion",()=>act("ai_decide",{run_id:run.id,index,status:"pending"})));
+      else item.append(button("Create unapproved reference",()=>bindAiDraft(run,index,candidate)),
+        button("Dismiss and remember",()=>act("ai_decide",{run_id:run.id,index,status:"dismissed"})));
+      card.append(item);
+    });inbox.append(card);
+  }
+  inbox.append(button("Clear AI response cache",async()=>{
+    if(await confirmAction("Clear cached AI results?","This removes response-cache/inbox entries, not sources, references, approved rules or remembered decisions."))await act("ai_clear_cache");
+  }));
+  content.append(inbox);reviewTriage();
+}
+function bindAiDraft(run:AiRun,index:number,candidate:AiCandidate) {
+  const dialog=el("dialog"),box=el("div","","modal wide"),search=field("Find a library record (optional)",candidate.title),select=el("select");
+  const renderMatches=()=>{
+    const empty=el("option","No binding — use source identity only");empty.value="";select.replaceChildren(empty);
+    const needle=search.input.value.toLowerCase();
+    const books=state.proposals.map(p=>p.book).filter(b=>`${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle));
+    for(const book of books.slice(0,50)) {const option=el("option",`#${book.id} ${book.title} — ${book.authors.join(" & ")}`);option.value=String(book.id);select.append(option);}
+  };
+  search.input.oninput=renderMatches;renderMatches();
+  const current=el("div");select.onchange=()=>{
+    const book=state.proposals.find(p=>p.book.id===Number(select.value))?.book;
+    current.replaceChildren();if(book)current.append(el("p",`${book.title} — ${book.authors.join(" & ")} · ${book.formats.join(", ")}`),hierarchy(book.hierarchy));
+  };
+  box.append(el("h2",`Create draft: ${candidate.title}`),el("p","A library binding requires your explicit selection. Unspecified fields stay unchanged, even without a binding. No suggestion can unlock protected fields.","warning"),
+    search.wrapper,select,current,button("Create draft only",async()=>{
+      await act("ai_draft",{run_id:run.id,index,book_id:select.value?Number(select.value):null},"Unapproved draft created. Review it in References before approving or applying.");dialog.close();
+    },"primary"),button("Cancel",()=>dialog.close()));
+  dialog.append(box);document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();
+}
+function reviewTriage() {
+  const queue=el("details");queue.append(el("summary","Review priority queue — no AI calls"));
+  const drafts=new Map<string,Reference[]>();
+  for(const r of state.data.references.filter(r=>!r.approved)) {const key=normalized(r.title),items=drafts.get(key)??[];items.push(r);drafts.set(key,items);}
+  const rows=state.proposals.map(p=>{
+    const reasons:string[]=[];let score=0;
+    if(p.status==="conflict"){reasons.push("Approved rule conflicts with current metadata");score+=10;}
+    if(p.reason.includes("Conflicting approved references")||(p.reference_id&&state.issues[p.reference_id])) {
+      reasons.push("Approved references or chronology constraints conflict");score+=12;
+    }
+    const matches=(drafts.get(normalized(p.book.title))??[]).filter(r=>!r.authors.length||!p.book.authors.length||
+      r.authors.some(a=>p.book.authors.some(b=>normalized(a)===normalized(b))));
+    if(matches.length){reasons.push(`${matches.length} draft reference(s) available`);score+=6;}
+    if(p.book.hierarchy.some((v,i)=>i>0&&v.name&&!p.book.hierarchy[i-1].name)){reasons.push("Nested series has an empty parent");score+=4;}
+    if(/\b(omnibus|collection|boxed set|box set)\b/i.test(p.book.title)){reasons.push("Edition scope needs careful review");score+=2;}
+    if(!p.book.authors.length){reasons.push("Author identity missing");score+=2;}
+    return {p,matches,reasons,score};
+  }).filter(r=>r.score).sort((a,b)=>b.score-a.score||a.p.book.id-b.p.book.id);
+  queue.append(el("p",`${rows.length} records with review signals. Showing the first 100; ranking indicates review value, not factual confidence.`));
+  for(const {p,matches,reasons} of rows.slice(0,100)) {
+    const item=el("div","","card");item.append(el("strong",`#${p.book.id} ${p.book.title}`),el("p",reasons.join(" · ")),
+      button("Inspect record",()=>editBook(p)));
+    for(const ref of matches.slice(0,3))item.append(button(`Review draft: ${ref.title}`,()=>referenceEditor(ref)));
+    queue.append(item);
+  }content.append(queue);
 }
 
 async function start() {

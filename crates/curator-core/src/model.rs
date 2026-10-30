@@ -89,6 +89,8 @@ pub struct Reference {
     pub before: Vec<String>,
     pub fixed: bool,
     pub edition: String,
+    pub ai_provenance: Option<crate::ai::AiProvenance>,
+    pub field_mask: Option<[bool; 4]>,
 }
 impl Default for Reference {
     fn default() -> Self {
@@ -108,6 +110,8 @@ impl Default for Reference {
             before: Vec::new(),
             fixed: true,
             edition: "any".into(),
+            ai_provenance: None,
+            field_mask: None,
         }
     }
 }
@@ -127,6 +131,10 @@ pub struct AppData {
     pub sources: Vec<Source>,
     pub pins: BTreeMap<String, [bool; 4]>,
     pub aliases: Vec<UniverseAlias>,
+    pub ai_settings: crate::ai::AiSettings,
+    pub ai_models: Vec<crate::ai::AiModel>,
+    pub ai_runs: Vec<crate::ai::AiRun>,
+    pub ai_decisions: BTreeMap<String, crate::ai::AiDecision>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

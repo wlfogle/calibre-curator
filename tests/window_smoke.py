@@ -9,6 +9,7 @@ import re
 import sqlite3
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -33,6 +34,12 @@ def main():
                CURATOR_LIBRARY=str(library), CURATOR_WORKSPACE=str(folder / "workspace"))
     subprocess.run(["/usr/bin/calibre-debug", "-e", str(ROOT / "tests/fixture.py")],
                    env=env, check=True, capture_output=True)
+    ai_workflow="--ai-workflow" in sys.argv
+    if ai_workflow:
+        source=folder/"fictional-timeline.html"
+        source.write_text("<p>Universe: Test Universe. The following entries give whole-book chronological positions.</p><p>Chronological position: 1. Title: First Light. Author: Test Author. Subseries: Dawn Cycle. Subseries number: 2. Edition: novel.</p>")
+        subprocess.run([str(ROOT/"target/release/curator"),"import",str(folder/"workspace"),str(library),str(source)],
+                       env=env,check=True,capture_output=True)
     before = hashlib.sha256((library / "metadata.db").read_bytes()).hexdigest()
     log = (folder / "native.log").open("w")
     process = subprocess.Popen([str(ROOT / "target/release/calibre-curator")], env=env,
@@ -88,13 +95,14 @@ def main():
                 point = locate(text,last)
                 if point:
                     break
-                subprocess.run(["xdotool", "mousemove", "--window", window, "650", "550",
+                subprocess.run(["xdotool","windowactivate","--sync",window,"mousemove","--sync","--window",window,"650","550",
                                  "click", "--repeat", "3", "--delay", "100", "5"], check=True)
                 time.sleep(0.65)
             if not point:
                 raise RuntimeError(f"Native control not visible: {text}")
             print(f"Native click: {text} at {point}", flush=True)
-            subprocess.run(["xdotool", "mousemove", "--sync", "--window", window, str(point[0]), str(point[1]), "click", "1"], check=True)
+            subprocess.run(["xdotool","windowactivate","--sync",window,"sleep","0.15",
+                             "mousemove", "--sync", "--window", window, str(point[0]), str(point[1]), "click", "1"], check=True)
             time.sleep(0.4)
 
         def edit(label, value):
@@ -103,6 +111,51 @@ def main():
                              "type", "--clearmodifiers", value], check=True)
 
         wait(lambda: locate("4 books"))
+        click("assistant")
+        wait(lambda:locate("Optional Ollama assistant"))
+        click("List installed models",scroll=True)
+        def models_saved():
+            with sqlite3.connect(folder/"workspace/state.sqlite3") as db:
+                data=json.loads(db.execute("SELECT value FROM state WHERE key='app'").fetchone()[0])
+            if data.get("ai_settings",{}).get("enabled") or data.get("ai_runs"):
+                raise RuntimeError("Listing models unexpectedly enabled AI or generated suggestions")
+            return len(data.get("ai_models",[]))>0
+        wait(models_saved)
+        subprocess.run(["import","-window",window,str(folder/"ai-assistant.png")],check=True)
+        if ai_workflow:
+            click("Enable optional Ollama suggestions",scroll=True)
+            click("Save AI settings",scroll=True)
+            def data():
+                with sqlite3.connect(folder/"workspace/state.sqlite3") as db:
+                    return json.loads(db.execute("SELECT value FROM state WHERE key='app'").fetchone()[0])
+            wait(lambda:data()["ai_settings"]["enabled"])
+            edit("Last segment","2")
+            edit("universe context","Test Universe")
+            click("Extract cited drafts",scroll=True)
+            subprocess.run(["xdotool","windowactivate","--sync",window,"key","--clearmodifiers","Tab","Return"],check=True)
+            wait(lambda:len(data()["ai_runs"])>0,seconds=120)
+            if data()["ai_runs"][0]["extraction"]["status"]=="insufficient_evidence":
+                if any(r.get("ai_provenance") for r in data()["references"]):
+                    raise RuntimeError("Insufficient-evidence response created a draft")
+                if hashlib.sha256((library/"metadata.db").read_bytes()).hexdigest()!=before:
+                    raise RuntimeError("AI insufficient-evidence workflow changed the database")
+                print(json.dumps({"status":"passed","folder":str(folder),"checks":[
+                    "native model discovery","explicit local inference","insufficient evidence handled safely","database unchanged"]}))
+                return
+            subprocess.run(["import","-window",window,str(folder/"ai-results.png")],check=True)
+            click("Create unapproved reference",scroll=True)
+            subprocess.run(["xdotool","windowactivate","--sync",window,"key","--clearmodifiers","Tab","Tab","Return"],check=True)
+            wait(lambda:any(r.get("ai_provenance") for r in data()["references"]))
+            references=[r for r in data()["references"] if r.get("ai_provenance")]
+            if any(r["approved"] or r["book_uuids"] or not r.get("field_mask") for r in references):
+                raise RuntimeError("AI UI approved/bound a record automatically or omitted its partial mask")
+            if hashlib.sha256((library/"metadata.db").read_bytes()).hexdigest()!=before:
+                raise RuntimeError("AI workflow changed library metadata")
+            print(json.dumps({"status":"passed","folder":str(folder),"checks":[
+                "native Ollama model discovery","explicit AI enablement","source excerpt preview",
+                "real local extraction","unapproved unbound partial-field draft","database unchanged"]}))
+            return
+        click("Library")
         click("Universes")
         wait(lambda:locate("Universe & subseries coverage"))
         subprocess.run(["import","-window",window,str(folder/"universes.png")],check=True)
@@ -146,6 +199,12 @@ def main():
         print(json.dumps({"status": "passed", "folder": str(folder),
                           "checks": ["native audit", "reference edit/approval", "field review",
                                      "production writer-lock refusal", "history", "database unchanged"]}))
+    except Exception:
+        if process.poll() is None and "window" in locals():
+            failure=folder/"failure.png"
+            subprocess.run(["import","-window",window,str(failure)],check=False)
+            subprocess.run(["tesseract",str(failure),"stdout"],check=False)
+        raise
     finally:
         if lock is not None and lock.poll() is None:
             lock.terminate()

@@ -22,6 +22,12 @@ pub fn model_universe(book: &Book) -> bool {
     })
 }
 pub fn validate_reference(reference: &Reference) -> Result<()> {
+    if reference
+        .field_mask
+        .is_some_and(|mask| !mask.iter().any(|v| *v))
+    {
+        bail!("A partial reference must select at least one field");
+    }
     if reference.title.trim().is_empty() {
         bail!("A reference needs a work title");
     }
@@ -29,6 +35,9 @@ pub fn validate_reference(reference: &Reference) -> Result<()> {
         bail!("An approved rule needs evidence or an explicit user decision");
     }
     for (slot, value) in reference.hierarchy.iter().enumerate() {
+        if reference.field_mask.is_some_and(|mask| !mask[slot]) {
+            continue;
+        }
         if let Some(name) = &value.name {
             if name.trim().is_empty() || name.trim() != name {
                 bail!("Trim series names");
@@ -162,7 +171,10 @@ fn work_key(reference: &Reference) -> String {
 pub fn chronology(references: &[Reference], universe: &str) -> Result<Vec<Vec<String>>> {
     let selected: Vec<_> = references
         .iter()
-        .filter(|r| r.hierarchy[0].name.as_deref() == Some(universe))
+        .filter(|r| {
+            r.hierarchy[0].name.as_deref() == Some(universe)
+                && r.field_mask.is_none_or(|mask| mask[0])
+        })
         .collect();
     let mut groups: BTreeMap<String, Vec<&Reference>> = BTreeMap::new();
     let mut id_group = BTreeMap::new();
@@ -252,7 +264,11 @@ pub fn chronology(references: &[Reference], universe: &str) -> Result<Vec<Vec<St
 }
 
 pub fn issues(references: &[Reference]) -> BTreeMap<String, String> {
-    let approved: Vec<_> = references.iter().filter(|r| r.approved).cloned().collect();
+    let approved: Vec<_> = references
+        .iter()
+        .filter(|r| r.approved && r.field_mask.is_none_or(|mask| mask[0]))
+        .cloned()
+        .collect();
     let universes: BTreeSet<_> = approved
         .iter()
         .filter_map(|r| r.hierarchy[0].name.clone())
@@ -284,6 +300,20 @@ pub fn issues(references: &[Reference]) -> BTreeMap<String, String> {
     issues
 }
 
+fn effective_target(book: &Book, reference: &Reference) -> Hierarchy {
+    let mut target = reference.hierarchy.clone();
+    if let Some(mask) = reference.field_mask {
+        for (slot, value) in target.iter_mut().enumerate() {
+            if !mask[slot] {
+                *value = book.hierarchy[slot].clone();
+            }
+        }
+    }
+    if target[0].name.is_none() && reference.field_mask.is_none_or(|mask| mask[0]) {
+        target[0].index = Some(1.0);
+    }
+    target
+}
 pub fn propose(
     book: &Book,
     data: &AppData,
@@ -339,7 +369,10 @@ pub fn propose(
         return result;
     }
     let reference = best[0].1;
-    if best.iter().any(|(_, r)| r.hierarchy != reference.hierarchy) {
+    if best
+        .iter()
+        .any(|(_, r)| effective_target(book, r) != effective_target(book, reference))
+    {
         result.reason = "Conflicting approved references match this identity; review them.".into();
         return result;
     }
@@ -374,10 +407,7 @@ pub fn propose(
             "Edition scope may be a collection rather than the referenced novel.".into();
         return result;
     }
-    let mut target = reference.hierarchy.clone();
-    if target[0].name.is_none() {
-        target[0].index = Some(1.0);
-    }
+    let target = effective_target(book, reference);
     result.changed = (0..4)
         .filter(|slot| book.hierarchy[*slot] != target[*slot])
         .collect();
@@ -412,6 +442,11 @@ pub fn propose(
             ""
         }
     );
+    if reference.field_mask.is_some() {
+        result
+            .reason
+            .push_str(" [Partial-field rule: unselected fields are preserved, not certified.]");
+    }
     result
 }
 

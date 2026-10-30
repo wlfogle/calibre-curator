@@ -21,6 +21,25 @@ fn book() -> Book {
         formats: vec!["EPUB".into()],
     }
 }
+#[test]
+fn partial_rules_preserve_primary_and_compare_effective_targets() {
+    let b = book();
+    let mut partial = reference();
+    partial.field_mask = Some([false, true, false, false]);
+    let mut data = AppData {
+        references: vec![partial.clone()],
+        ..Default::default()
+    };
+    let result = propose(&b, &data, "library", &issues(&data.references));
+    assert_eq!(result.after.unwrap()[0], b.hierarchy[0]);
+    let mut full = partial;
+    full.id = new_id();
+    full.field_mask = None;
+    data.references.push(full);
+    assert!(propose(&b, &data, "library", &issues(&data.references))
+        .after
+        .is_none());
+}
 fn reference() -> Reference {
     Reference {
         title: "A Work".into(),

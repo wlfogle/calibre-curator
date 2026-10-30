@@ -192,6 +192,11 @@ impl App {
         if reference.hierarchy[0].name.is_none() {
             reference.hierarchy[0].index = Some(1.0);
         }
+        if let Some(provenance) = &reference.ai_provenance {
+            let source=self.data.sources.iter().find(|s|s.id==reference.source_id)
+                .context("AI evidence must retain its original source; create a separate manual reference to replace provenance")?;
+            crate::ai::validate_provenance(provenance, source)?;
+        }
         matching::validate_reference(&reference)?;
         if reference.approved {
             reference.origin = "user-reviewed reference".into();
@@ -477,7 +482,18 @@ impl App {
                 title: book.title.clone(),
                 before: book.hierarchy.clone(),
                 after: request.after,
-                evidence: proposal.reason,
+                evidence: format!(
+                    "{}{}",
+                    proposal.reason,
+                    reference
+                        .ai_provenance
+                        .as_ref()
+                        .map(|p| format!(
+                            " [AI provenance: model {}; digest {}; prompt {}]",
+                            p.model, p.digest, p.prompt_version
+                        ))
+                        .unwrap_or_default()
+                ),
                 sources: vec![format!(
                     "{}; sha256={}; reference={}",
                     source.location, source.sha256, reference.id

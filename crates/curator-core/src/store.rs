@@ -1,6 +1,6 @@
 use crate::model::AppData;
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::{
     fs,
@@ -36,7 +36,8 @@ impl Store {
         let connection = Connection::open(root.join("state.sqlite3"))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-             CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS ai_cache(key TEXT PRIMARY KEY,value TEXT NOT NULL);",
         )?;
         fs::create_dir_all(root.join("operations"))?;
         Ok(Self {
@@ -62,6 +63,25 @@ impl Store {
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [serde_json::to_string(data)?],
         )?;
+        Ok(())
+    }
+    pub fn cached(&self, key: &str) -> Result<Option<crate::ai::AiRun>> {
+        let raw: Option<String> = self
+            .connection
+            .query_row("SELECT value FROM ai_cache WHERE key=?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
+            .transpose()
+    }
+    pub fn cache(&self, run: &crate::ai::AiRun) -> Result<()> {
+        self.connection.execute("INSERT INTO ai_cache(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&run.cache_key,&serde_json::to_string(run)?])?;
+        Ok(())
+    }
+    pub fn clear_ai_cache(&self) -> Result<()> {
+        self.connection.execute("DELETE FROM ai_cache", [])?;
         Ok(())
     }
 }

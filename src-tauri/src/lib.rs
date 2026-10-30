@@ -53,6 +53,36 @@ async fn dispatch(
             };
             match action.as_str() {
                 "snapshot" => {}
+                "ai_settings" => app
+                    .configure_ai(
+                        serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "ai_models" => app.discover_ai_models().map_err(|e| e.to_string())?,
+                "ai_extract" => app
+                    .extract_ai(
+                        string("source_id")?,
+                        payload["start"].as_u64().ok_or("Missing segment start")? as usize,
+                        payload["end"].as_u64().ok_or("Missing segment end")? as usize,
+                        payload["universe"].as_str().unwrap_or(""),
+                        payload["refresh"].as_bool().unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())?,
+                "ai_decide" => app
+                    .decide_ai(
+                        string("run_id")?,
+                        payload["index"].as_u64().ok_or("Missing candidate index")? as usize,
+                        string("status")?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                "ai_draft" => app
+                    .materialize_ai(
+                        string("run_id")?,
+                        payload["index"].as_u64().ok_or("Missing candidate index")? as usize,
+                        payload["book_id"].as_i64(),
+                    )
+                    .map_err(|e| e.to_string())?,
+                "ai_clear_cache" => app.clear_ai_cache().map_err(|e| e.to_string())?,
                 "scan" => app.refresh().map_err(|e| e.to_string())?,
                 "settings" => app
                     .settings(serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?)
