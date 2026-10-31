@@ -426,6 +426,21 @@ impl App {
         kind: &str,
         parent: Option<String>,
     ) -> Operation {
+        let research_evidence = self
+            .data
+            .chronology_runs
+            .iter()
+            .filter(|run| {
+                run.library == self.data.settings.library
+                    && changes.iter().any(|c| c.uuid == run.book_uuid)
+                    && self
+                        .data
+                        .references
+                        .iter()
+                        .any(|r| r.approved && r.research_run_id.as_ref() == Some(&run.id))
+            })
+            .cloned()
+            .collect();
         Operation {
             id: new_id(),
             created: std::time::SystemTime::now()
@@ -438,6 +453,9 @@ impl App {
             kind: kind.into(),
             parent,
             backup: None,
+            backup_coverage: String::new(),
+            backup_verified: false,
+            research_evidence,
             error: None,
             changes,
             protections: self.protections(),
@@ -658,7 +676,7 @@ impl App {
             serde_json::from_slice(&fs::read(folder.join("operation.json"))?)?;
         if operation.backup.is_some()
             || folder.join("guard.json").exists()
-            || !["prepared", "locked", "rejected"].contains(&operation.phase.as_str())
+            || !["prepared", "locked", "backing_up", "rejected"].contains(&operation.phase.as_str())
         {
             bail!("This operation may have written data: guarded recovery or manual review is required");
         }

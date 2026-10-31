@@ -220,6 +220,7 @@ fn combined_repair_roundtrip_and_recovery() {
     };
     let before = fill.book.clone();
     app.apply_repairs(RepairRequest {
+        research: Vec::new(),
         series: vec![request(&app, 4)],
         fills: vec![fill.clone()],
     })
@@ -257,6 +258,7 @@ fn combined_repair_roundtrip_and_recovery() {
     assert_eq!(keep.identifiers["goodreads"], "555");
     assert!(app
         .apply_repairs(RepairRequest {
+            research: Vec::new(),
             series: vec![],
             fills: vec![fill.clone()]
         })
@@ -289,6 +291,7 @@ fn combined_repair_roundtrip_and_recovery() {
     app.bridge = broken;
     assert!(app
         .apply_repairs(RepairRequest {
+            research: Vec::new(),
             series: vec![request(&app, 4)],
             fills: vec![fill.clone()]
         })
@@ -316,6 +319,7 @@ fn combined_repair_roundtrip_and_recovery() {
     command("import os; from calibre.db.legacy import LibraryDatabase; db=LibraryDatabase(os.environ['CURATOR_TEST_LIBRARY']); db.new_api.set_field('publisher',{4:'Later Edit'}); db.close()",&library);
     assert!(app
         .apply_repairs(RepairRequest {
+            research: Vec::new(),
             series: vec![],
             fills: vec![fill]
         })

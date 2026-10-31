@@ -274,6 +274,8 @@ fn public(ip: IpAddr) -> bool {
                 || ip.octets()[0] == 0
                 || ip.octets()[0] >= 240
                 || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])))
+                && !(ip.octets()[0] == 198 && (18..=19).contains(&ip.octets()[1]))
+                && !(ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 0)
         }
         IpAddr::V6(ip) => {
             !ip.is_loopback()
@@ -282,6 +284,9 @@ fn public(ip: IpAddr) -> bool {
                 && !ip.is_unicast_link_local()
                 && !ip.is_multicast()
                 && ip.to_ipv4_mapped().is_none()
+                && (ip.segments()[0] & 0xe000) == 0x2000
+                && !(ip.segments()[0] == 0x2001 && ip.segments()[1] < 0x0200)
+                && !(ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
         }
     }
 }
@@ -293,6 +298,15 @@ pub fn fetch(url: &str, universe: &str, scan: Option<&Scan>) -> Result<(Source, 
     parse(&bytes, url, "html", universe, scan)
 }
 pub fn public_bytes(url: &str) -> Result<(u16, Vec<u8>)> {
+    let response = checked_response(url)?;
+    if response.status().is_redirection() {
+        bail!("Redirect blocked: explicitly request its public HTTPS destination");
+    }
+    let response = response.error_for_status()?;
+    let status = response.status().as_u16();
+    Ok((status, bounded(response)?))
+}
+pub(crate) fn checked_response(url: &str) -> Result<reqwest::blocking::Response> {
     let url = reqwest::Url::parse(url)?;
     if url.scheme() != "https"
         || url.port_or_known_default() != Some(443)
@@ -314,13 +328,7 @@ pub fn public_bytes(url: &str) -> Result<(u16, Vec<u8>)> {
         .resolve_to_addrs(host, &addresses)
         .user_agent("Calibre-Curator/0.1 (explicit user source request)")
         .build()?;
-    let response = client.get(url.clone()).send()?.error_for_status()?;
-    if response.status().is_redirection() {
-        bail!("Redirect blocked: explicitly request its public HTTPS destination");
-    }
-    let status = response.status().as_u16();
-    let bytes = bounded(response)?;
-    Ok((status, bytes))
+    Ok(client.get(url).send()?)
 }
 
 /// Only successfully verified historical audits are eligible; newest per UUID wins.

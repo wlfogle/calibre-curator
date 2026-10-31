@@ -343,6 +343,7 @@ pub fn propose(
         .map(|r| (score(book, r), r))
         .filter(|((score, _), _)| *score > 0)
         .filter(|(_, r)| crate::documents::authorized(data, r))
+        .filter(|(_, r)| crate::chronology::authorized(data, r))
         .collect();
     let best = candidates
         .iter()

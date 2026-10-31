@@ -1,13 +1,16 @@
 """Calibre API bridge. Invoked only with an application operation journal."""
 import argparse
 import copy
+from contextlib import closing
 import fcntl
 import hashlib
 import json
 import math
+import os
 import pathlib
 import shutil
 import sqlite3
+import stat
 import xml.etree.ElementTree as ET
 
 FIELDS = ("series1", "series2", "series3", "series4")
@@ -91,6 +94,21 @@ def category_payloads(connection, columns):
             row.pop("id")
             result[table][name] = row
     return result
+
+
+def verify_full_backup(backup):
+    manifest = json.loads((backup / "manifest.json").read_text())
+    if manifest.get("coverage") != "full-library" or manifest.get("verified") is not True:
+        raise ValueError("Original full backup is not verified")
+    snapshot = backup / "library"
+    files, directories = library_inventory(snapshot)
+    if set(files) != set(manifest["files"]) or directories != manifest["directories"]:
+        raise ValueError("Original full backup inventory changed")
+    for name, expected in manifest["files"].items():
+        if file_hash(snapshot / name) != expected["sha256"]:
+            raise ValueError("Original full backup file hash changed")
+    if file_hash(backup / "metadata.db") != manifest["files"]["metadata.db"]["sha256"]:
+        raise ValueError("Original recovery database hash changed")
 
 def write_fields(api, targets, checkpoint):
     for slot, field in enumerate(FIELDS):
@@ -321,6 +339,115 @@ def fingerprint(database, library, columns, ids, comment_ids=(), bibliography_id
         return result
 
 
+def file_hash(path):
+    value = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def library_inventory(library):
+    """Never follow links or silently omit a library file."""
+    files, directories = {}, []
+    def visit(directory):
+        for path in sorted(directory.iterdir()):
+            relative = str(path.relative_to(library))
+            if relative in ("metadata.db-wal", "metadata.db-shm", "metadata.db-journal"):
+                continue  # The database itself is copied with SQLite's backup API.
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or not path.resolve().is_relative_to(library):
+                raise ValueError("Full backup refuses symbolic links or escaping paths")
+            if stat.S_ISDIR(info.st_mode):
+                directories.append(relative)
+                visit(path)
+            elif stat.S_ISREG(info.st_mode):
+                files[relative] = [info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev]
+            else:
+                raise ValueError("Full backup requires regular files and directories")
+    visit(library)
+    if "metadata.db" not in files:
+        raise ValueError("Library database is missing")
+    return files, directories
+
+
+def durable_copy(source, destination):
+    shutil.copy2(source, destination)
+    with destination.open("rb") as output:
+        os.fsync(output.fileno())
+
+
+def full_library_backup(library, backup):
+    with closing(read_database(library / "metadata.db")) as observer:
+        version = observer.execute("PRAGMA data_version").fetchone()[0]
+        return copy_library_snapshot(library, backup, observer, version)
+
+
+def copy_library_snapshot(library, backup, observer, version):
+    if backup.resolve().is_relative_to(library.resolve()):
+        raise ValueError("Full backup must be outside the library")
+    files, directories = library_inventory(library)
+    database_bytes = max(files["metadata.db"][0],
+                         observer.execute("PRAGMA page_count").fetchone()[0]
+                         * observer.execute("PRAGMA page_size").fetchone()[0])
+    total = sum(info[0] for info in files.values()) - files["metadata.db"][0] + database_bytes
+    opf_bytes = sum(info[0] for name, info in files.items() if pathlib.Path(name).name == "metadata.opf")
+    required = total + database_bytes + opf_bytes + max(16 * 1024 * 1024, total // 100)
+    if shutil.disk_usage(backup.parent).free < required:
+        raise ValueError(f"Insufficient backup space: need at least {required} bytes; no metadata written")
+    backup.mkdir(mode=0o700, exist_ok=False)
+    snapshot = backup / "library"
+    snapshot.mkdir(mode=0o700)
+    for directory in directories:
+        (snapshot / directory).mkdir()
+    with read_database(library / "metadata.db") as source:
+        destination = sqlite3.connect(snapshot / "metadata.db")
+        try:
+            source.backup(destination)
+            if destination.execute("PRAGMA journal_mode=DELETE").fetchone()[0].lower() != "delete":
+                raise ValueError("Backup database could not be made standalone")
+            if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("Backup database integrity failed")
+        finally:
+            destination.close()
+    manifest = {}
+    for completed, relative in enumerate(files, 1):
+        path = library / relative
+        copied = snapshot / relative
+        if relative != "metadata.db":
+            original_hash = file_hash(path)
+            durable_copy(path, copied)
+            if file_hash(copied) != original_hash or file_hash(path) != original_hash:
+                raise ValueError("Library file changed during backup or copied bytes differ")
+        else:
+            with copied.open("rb") as output:
+                os.fsync(output.fileno())
+        manifest[relative] = {"bytes": copied.stat().st_size, "sha256": file_hash(copied)}
+        print("CURATOR_PROGRESS:" + json.dumps({
+            "phase": "Verifying full-library backup", "completed": completed, "total": len(files)
+        }), flush=True)
+    if library_inventory(library) != (files, directories):
+        raise ValueError("Library inventory changed during backup; no metadata written")
+    copied_files, copied_directories = library_inventory(snapshot)
+    if set(copied_files) != set(files) or copied_directories != directories:
+        raise ValueError("Full backup inventory does not match")
+    # Keep the original recovery format as well as the complete library snapshot.
+    durable_copy(snapshot / "metadata.db", backup / "metadata.db")
+    for directory in reversed([snapshot, *(snapshot / name for name in directories)]):
+        descriptor = os.open(str(directory), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    if observer.execute("PRAGMA data_version").fetchone()[0] != version:
+        raise ValueError("Library database changed during backup; no metadata written")
+    result = {"coverage": "full-library", "verified": True, "library": str(library),
+              "snapshot": str(snapshot), "files": manifest, "directories": directories,
+              "excluded_transient_database_files": ["metadata.db-wal", "metadata.db-shm", "metadata.db-journal"]}
+    atomic(backup / "manifest.json", result)
+    return result
+
+
 def execute(journal):
     global API_FIELDS
     operation = json.loads(journal.read_text())
@@ -383,6 +510,8 @@ def execute(journal):
             if not guard.is_file():
                 raise ValueError("No durable checkpoint exists; manual recovery review required")
             previous = json.loads((parent / "operation.json").read_text())
+            if previous.get("backup_coverage") == "full-library":
+                verify_full_backup(parent / "backup")
             if previous["library"] != str(library) or previous["columns"] != labels:
                 raise ValueError("Recovery library/columns do not match")
             if previous.get("metadata_field", "series") != operation.get("metadata_field", "series"):
@@ -410,17 +539,17 @@ def execute(journal):
                 if entry["after"] != originals[entry["id"]]["before"]:
                     raise ValueError("Reversal must restore the original hierarchy")
         backup = folder / "backup"
-        backup.mkdir(exist_ok=False)
+        phase("backing_up")
+        backup_manifest = full_library_backup(library, backup)
         original_opf = backup / "original-opf"
         original_opf.mkdir()
-        with read_database(database) as connection:
-            with sqlite3.connect(backup / "metadata.db") as destination:
-                connection.backup(destination)
         for book_id in ids:
             path = safe_opf(library, current[book_id])
             if path.exists():
-                shutil.copy2(path, original_opf / f"{book_id}.opf")
+                durable_copy(backup / "library" / path.relative_to(library), original_opf / f"{book_id}.opf")
         operation["backup"] = str(backup)
+        operation["backup_coverage"] = backup_manifest["coverage"]
+        operation["backup_verified"] = True
         baseline = fingerprint(database, library, columns, ids, comment_ids, bibliography_ids)
         def checkpoint():
             atomic(folder / "guard.json", fingerprint(database, library, columns, ids, comment_ids, bibliography_ids))

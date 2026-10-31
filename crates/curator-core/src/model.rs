@@ -100,6 +100,7 @@ pub struct Reference {
     pub ai_provenance: Option<crate::ai::AiProvenance>,
     pub field_mask: Option<[bool; 4]>,
     pub document_verification: Option<String>,
+    pub research_run_id: Option<String>,
 }
 impl Default for Reference {
     fn default() -> Self {
@@ -122,6 +123,7 @@ impl Default for Reference {
             ai_provenance: None,
             field_mask: None,
             document_verification: None,
+            research_run_id: None,
         }
     }
 }
@@ -152,6 +154,7 @@ pub struct AppData {
     pub source_reviews: BTreeMap<String, crate::documents::SourceReview>,
     pub research_runs: Vec<crate::research::ResearchRun>,
     pub repair_notes: Vec<String>,
+    pub chronology_runs: Vec<crate::chronology::ChronologyRun>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -210,6 +213,12 @@ pub struct Operation {
     pub kind: String,
     pub parent: Option<String>,
     pub backup: Option<String>,
+    #[serde(default)]
+    pub backup_coverage: String,
+    #[serde(default)]
+    pub backup_verified: bool,
+    #[serde(default)]
+    pub research_evidence: Vec<crate::chronology::ChronologyRun>,
     pub error: Option<String>,
     pub changes: Vec<Change>,
     pub protections: Vec<Protection>,

@@ -15,6 +15,8 @@ pub struct FillRequest {
 pub struct RepairRequest {
     pub series: Vec<Change>,
     pub fills: Vec<FillRequest>,
+    #[serde(default)]
+    pub research: Vec<String>,
 }
 pub fn fill_values(
     book: &Book,
@@ -66,8 +68,8 @@ impl App {
         self.data.repair_notes = notes;
         self.store.save(&self.data)
     }
-    pub fn apply_repairs(&mut self, request: RepairRequest) -> Result<()> {
-        if request.series.is_empty() && request.fills.is_empty() {
+    pub fn apply_repairs(&mut self, mut request: RepairRequest) -> Result<()> {
+        if request.series.is_empty() && request.fills.is_empty() && request.research.is_empty() {
             bail!("No repairs selected");
         }
         if request.fills.len() > 20 {
@@ -81,6 +83,41 @@ impl App {
         }
         // Revalidate the entire metadata selection before any library write.
         self.refresh()?;
+        let researched = self.accept_research(&request.research)?;
+        let snapshot = self.snapshot()?;
+        for p in snapshot
+            .proposals
+            .into_iter()
+            .filter(|p| researched.contains(&p.book.id))
+        {
+            if request.series.iter().any(|c| c.id == p.book.id) {
+                bail!("A book cannot have separate old and researched series selections");
+            }
+            let target = p.after.context("No supported research target")?;
+            let after = std::array::from_fn(|i| {
+                if p.pinned[i] {
+                    p.book.hierarchy[i].clone()
+                } else {
+                    target[i].clone()
+                }
+            });
+            if after == p.book.hierarchy {
+                continue;
+            }
+            request.series.push(Change {
+                id: p.book.id,
+                uuid: p.book.uuid,
+                title: p.book.title,
+                before: p.book.hierarchy,
+                after,
+                evidence: String::new(),
+                sources: Vec::new(),
+                comments: None,
+                bibliography: None,
+                authors: p.book.authors,
+                identifiers: p.book.identifiers,
+            });
+        }
         let series = if request.series.is_empty() {
             Vec::new()
         } else {

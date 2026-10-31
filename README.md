@@ -14,6 +14,12 @@ fish run-curator.fish
 Subsequent launches can use **Calibre Curator** in the application menu. Rebuild after pulling source updates with `git pull --ff-only` and `pnpm package`. Preserve the separate application workspace; do not replace it with an empty directory when upgrading.
 
 ## Run
+### Version 0.5.0
+- Adds **Research chronology and subseries** directly in Repair: automatic DuckDuckGo discovery, bounded source fetching, excerpt selection and cited findings.
+- Distinguishes story chronology from publication/recommended order; partial timelines, fictional years, disputed positions and collections do not become invented global numbers.
+- Uses the installed local Ollama model when enabled; no documents, URLs or excerpts need to be supplied for each book.
+- Requires an independent, verified **full-library backup, including ebooks**, before every apply or reversal. Insufficient space, unreadable/changing files and failed verification block writes.
+- Adds **History → Revert this batch**, preserving guarded API restoration and interrupted recovery. Older metadata-only backups are labelled honestly.
 ### Version 0.4.0
 - Opens directly into **Repair**: scan, reuse verified sources, preview fixes together, and apply one backed-up batch.
 - Adds source-level verification of ordered ODT/HTML book entries and structured CSV/JSON mappings; no per-book rule approval is required for supported matches.
@@ -35,9 +41,9 @@ Subsequent launches can use **Calibre Curator** in the application menu. Rebuild
 This release does not certify arbitrary provider/model output, repair ebook files, automatically identify mixed-content books, overwrite populated Comments or download models. Validate a disposable library before your first write. Network/model tests depend on provider availability and installed local models; deterministic safety tests run without those services.
 
 ### Launch or install
-Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.4.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it. Close older Curator windows before upgrading to avoid simultaneous versions saving different application-state schemas.
+Build using `pnpm package`, then run `fish run-curator.fish` or `target/release/calibre-curator`. The Debian package is `target/release/bundle/deb/calibre-curator_0.5.0_amd64.deb` on x86-64. It includes a desktop launcher, the API bridge and the optional read-only `calibre-curator-audit` utility. Installing the package is separate from building it. Close older Curator windows before upgrading to avoid simultaneous versions saving different application-state schemas.
 
-To install the built package rather than run from the checkout, use `sudo nala install --no-install-recommends ./target/release/bundle/deb/calibre-curator_0.4.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug` and `fetch-ebook-metadata`.
+To install the built package rather than run from the checkout, use `sudo nala install --no-install-recommends ./target/release/bundle/deb/calibre-curator_0.5.0_amd64.deb`, then open the application menu. `amd64` means 64-bit Intel/AMD architecture, not Arch Linux. Calibre itself must be installed separately and provide `calibre-debug` and `fetch-ebook-metadata`.
 
 For an application-menu entry without installing the Debian package, run `python3 scripts/install_launcher.py`. It creates a per-user **Calibre Curator** entry pointing to this repository's release build and icon. Rerun it if you move the repository.
 
@@ -47,13 +53,33 @@ The normal workspace is `$XDG_DATA_HOME/org.nexus.calibre-curator` (usually `~/.
 
 ## Normal workflow
 1. Open **Repair** and click **Scan library**. The app also performs a read-only scan at startup. Configure the library and existing series-type custom columns once through **Library settings**.
-2. In **Sources**, add your reference files or public HTTPS pages. Open **Verify source**, supply the overarching series name and author context, preview the mappings and excluded text, then verify once. Source verification approves supported document mappings, not arbitrary text or search snippets.
+2. Your own documents are optional. In **Sources**, you can add reference files or public HTTPS pages, preview mappings and verify them once. Alternatively, choose a book in **Repair** and click **Research chronology and subseries**; the app finds and fetches relevant sources itself.
 3. Return to **Repair**. Supported series/subseries corrections are selected together; protected fields stay unchanged. Use the optional book filter to inspect a smaller group. The series selection remains library-wide and the final confirmation reports its size.
 4. Click **Find missing metadata** when needed. Up to 20 filtered books are looked up per request, using all enabled Calibre identification providers by default. Every provider gets an independent outcome. Consistent compatible results are prepared for preview; differing results require choosing a provider. Failed/mismatched results stay held. No ebooks or complete library inventory are uploaded.
 5. Inspect the proposed synopsis, publisher and missing identifier values beside the series corrections. Uncheck unwanted fields. The final **Apply selected fixes** confirmation also confirms the displayed work/edition matches; there is no separate per-book confirmation-and-draft-transfer sequence.
-6. Close Calibre, confirm the named library, and apply. The entire selection receives one database/OPF backup, checkpoint journal and verified History entry. **History → Guarded undo** reverses that batch if no intervening edits invalidate its checkpoint. Interrupted batches use guarded recovery; the batch is journaled, not a promise of a single atomic database transaction.
+6. Close Calibre, confirm the named library, and apply. A complete verified library copy must finish before metadata changes start. The entire selection receives one checkpoint journal and verified History entry. **History → Revert this batch** restores its edited fields if no intervening edits invalidate the checkpoint. Interrupted batches use guarded recovery; the batch is journaled, not a promise of a single atomic database transaction.
 
 Automatic fills currently cover blank Comments, blank publisher and absent/blank recognized identifier keys only. Existing identifiers are retained, invalid identifiers are filtered, and a conflicting edition is not forced through. Dates, covers, tags, languages, ratings, titles and authors are not fill targets. Long descriptions remain held rather than silently truncated; the optional advanced Ollama tools can prepare a shorter reviewed synopsis.
+
+### Automated chronology research
+Filter/select a book in **Repair**, then click **Research chronology and subseries** and confirm the bounded web request. The app uses title, authors and existing series labels as search hints, runs at most two DuckDuckGo queries, and fetches at most six distinct HTTPS pages, including relevant chronology/bibliography links found on them. Previously downloaded pages and compatible research runs are cached privately. Applicable reviewed rules are reused first; **Refresh research** explicitly requests new evidence.
+
+For cited prose/table interpretation, enable your installed local model once in **Advanced → AI assistant**. This uses the existing local/private endpoint restrictions and never downloads a model or invokes a hosted fallback. With AI disabled or unavailable, explicit source-declared complete chronological HTML lists can still be parsed deterministically. This fallback deliberately does not treat an arbitrary numbered reading list as full universe chronology.
+
+Automatic findings retain exact source citations, URL/hash/fetch time, query provenance, model digest and extraction version. Inspect these alongside normal fixes and include the supported result in the final batch Apply; no separate source approval or manual draft transfer is required. Unsupported fields remain unchanged. Findings with conflicting numbers or scope remain held; protected numbering is never unlocked.
+
+Main-series numbers require an explicitly supported chronological position or a complete scoped chronological list. Publication years, fictional years, event rows and recommended reading order are not numeric book positions. A narrower subseries list does not replace an established broader universe. An old unverified main-series label can be recognized as a subseries when the same evidence explicitly supplies that nested membership. Subseries retain their independently cited numbers. Unowned works do not compress positions. Relative claims can yield an interpolated position only between two uniquely matching, current reviewed anchors in the same overarching series; uncertain, missing or stale anchors leave it unresolved. Collections/omnibuses are not forced into one global whole-book chronological rank.
+
+The local model can interpret evidence, not invent missing facts. Shortened quotations may be expanded to the exact already-cited paragraph (maximum 1,200 bytes), after validating the original quotation; the findings label backend-added context. No uncited paragraphs are searched to repair a missing name. Citation validation and agreement between pages are not independent factual certification; the final batch review remains necessary. Same-site copies are not counted as independent corroboration.
+
+Research can return **ready** (possibly partial fields), **conflict**, **unresolved** or **blocked**. A blocked search preserves usable leads/evidence and stops without a CAPTCHA loop or Google substitution. Website structure and source availability limit coverage: the public Known Space smoke check successfully fetched sources but, with AI disabled, did not invent a global rank from timeline years. Some books genuinely remain unresolved. Successful run caches last a day, unresolved/blocked results five minutes, and fetched pages seven days; refresh bypasses reuse.
+
+### Full-library backups and Revert
+Every library-changing operation, including Revert/recovery, must first acquire Calibre's writer lock and create an independent full snapshot at the operation's `backup/library` directory, outside the library. This includes ebooks, covers, all OPFs, empty directories and auxiliary files. The database uses SQLite's consistent backup API, including committed WAL content; transient WAL/SHM/journal files are not copied as a substitute for a consistent database. Files are copied, not hard-linked, and snapshot access is owner-only.
+
+Free space is checked for the complete copy, recovery database/OPF compatibility copies and safety headroom. Every copied file has a verified SHA-256 manifest; inventory or database changes during copying invalidate the backup. Symlinks, special/unreadable files, insufficient space and copy/hash/integrity failures refuse metadata writes rather than producing a partial certified backup. Large libraries can require substantial time and disk space. Backups are retained, not automatically deleted.
+
+**History → Revert this batch** shows the backup location and coverage. It verifies the original full snapshot before restoring the batch's original edited fields through Calibre's API, then verifies metadata/OPFs again. It never blindly overwrites the live library or ebook contents. Intervening metadata edits or an uncheckpointed write can block Revert; the snapshot remains available for separately reviewed disaster recovery. New reversals receive their own complete pre-change snapshot. Older journals remain usable through their existing guarded metadata-only recovery path and are explicitly labelled as not being complete library copies.
 
 ### Verified source ordering
 For **every** overarching series, main-series positions follow the verified document's listed works, including novellas and short stories. Numbering does not restart at subseries boundaries and does not close gaps for unowned books. This is a user-verified ordering policy, not an inference that publication years establish story chronology. Generic “Phase” headings and format labels never become subseries.
@@ -208,8 +234,10 @@ AI-assisted exports retain provenance and partial-field masks. To approve them i
 
 ## Safety and recovery
 Each operation directory includes:
-- `operation.json`: complete before/after targets, identity, evidence, protected-field snapshot, phase and verification.
+- `operation.json`: complete before/after targets, identity, evidence, protected-field snapshot, phase and verification, plus complete related reviewed research runs with source URLs, hashes, citations, model provenance and anchors.
 - `backup/metadata.db`: consistent pre-write SQLite backup.
+- `backup/library/`: verified independent full-library snapshot for operations created by 0.5.0 and later.
+- `backup/manifest.json`: full snapshot file hashes, inventory and verification status.
 - `backup/original-opf/`: original target OPFs, where present.
 - `guard.json`: durable semantic checkpoint, target modification timestamps and OPF hashes.
 - `bridge.log`: installed Calibre output, including noisy plugins.
@@ -228,6 +256,7 @@ Development dependencies: Rust/Cargo (tested 1.99), Node 20.19+ and pnpm, Linux 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test -p curator-core`
+- `python3 tests/test_backups.py` — temporary-library full-copy, WAL consistency, corruption, concurrent mutation, symlink, insufficient-space and copy-failure checks.
 - `/usr/bin/python3 tests/ui_webkit.py` — exercises the production frontend bundle in WebKit with fictional IPC fixtures. Tests simple navigation, source-level verification, preview invalidation, provider-result preparation, selection persistence and one-confirmation combined apply. Requires Python GI and a WebKit2 introspection namespace (4.1 or 4.0) plus a graphical display; does not access Calibre or use mouse/OCR automation. Run `pnpm build` first.
 - `python3 tests/window_smoke.py` — actual native window; requires X11, xdotool, ImageMagick and tesseract. Creates a disposable library and verifies rule editing, approval, field review, the real production-lock refusal, history and an unchanged database checksum. Screenshots stay in its printed temporary directory. OCR avoids relying on an unavailable desktop accessibility bus.
 - `python3 tests/window_smoke.py --ai-workflow` — explicit native AI test, requiring local Ollama and installed `qwen3.5:4b`. Uses fictional source text only, enables AI in a disposable workspace, checks excerpt selection and inference, and verifies draft-only or insufficient-evidence behavior with an unchanged database checksum. Leave mouse/keyboard idle during native automation. The ordinary native test also checks model discovery, but does not request inference.
@@ -238,6 +267,10 @@ The package script directly builds Tauri's custom protocol and stages standard D
 The Calibre integration test creates only temporary libraries. It tests actual API apply/undo, stale review refusal, protection, a genuine bridge process exit followed by recovery, lock contention and refusal after intervening comments edits. Linux Calibre singleton names are global per user: a test-only namespace isolates the disposable fixture without changing the production bridge's locking policy. The test validates its exact temporary target before isolation. Calibre uses optimized Python; safety checks never rely on Python `assert` side effects.
 
 Combined-repair tests exercise series, subseries, Comments, publisher and identifier changes in one journal, complete guarded undo, interrupted recovery, populated non-target preservation and stale publisher refusal. Document tests cover global numbering across unowned books, explicit independent subseries indices, all four structured slots, partial-field preservation, duplicate/ambiguous matches, conflicting rules, source content changes and verification revocation. DuckDuckGo fixtures cover structured/HTML parsing, redirect-link decoding, challenge detection, unsafe links, deduplication and cache isolation.
+
+Automated research regressions cover prequels, independent nested numbers, publication/recommended/partial list rejection, fictional dates, scope mismatch, conflicts, missing/fabricated citations, same-cited-paragraph completion, relative directions/stale anchors, cached model protocol and research-to-Apply with full backup/refusal/Revert on a disposable Calibre library. The WebKit test also covers research selection and the full-backup/Revert UI.
+
+Opt-in checks: `cargo test -p curator-core --test chronology public_ -- --ignored --nocapture` performs bounded public source research without library access. `real_local_research_extraction` in that test file uses the configured default installed local model with fictional cached evidence only and checks both main and nested numbers; it does not download models or contact an external source.
 
 The opt-in `cargo test -p curator-core --test research public_author_discovery -- --ignored --nocapture` queries the public name Larry Niven without library data. `selected_local_document_read_only` in the documents tests reads only an explicitly selected `CURATOR_TEST_DOCUMENT`; it neither imports private contents into the repository nor accesses a Calibre library.
 

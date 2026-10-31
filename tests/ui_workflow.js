@@ -11,7 +11,7 @@ const snapshot = {workspace:"/tmp/fictional-workspace",issues:{},history:[],prop
   data:{settings:{library:"/tmp/fictional-library",columns:["series2","series3","series4"],calibre_binary:"/usr/bin/calibre-debug"},
     references:[],sources:[{id:"source",name:"Fictional reference",kind:"html",location:"fixture",sha256:"fixture",
       segments:[{ordinal:1,kind:"p",text:"Missing Work (2000) – Island #0"},{ordinal:2,kind:"p",text:"Owned Work (2001) – Island #1"}]}],
-    source_reviews:{},research_runs:[],repair_notes:[],aliases:[],ai_settings:{enabled:false},ai_models:[],ai_runs:[],ai_decisions:{},
+    source_reviews:{},research_runs:[],chronology_runs:[],repair_notes:[],aliases:[],ai_settings:{enabled:false},ai_models:[],ai_runs:[],ai_decisions:{},
     metadata_settings:{search_all:true,providers:[],fetch_binary:"/usr/bin/fetch-ebook-metadata",timeout_seconds:15,cache_days:7},
     metadata_providers:[],synopsis_drafts:[],metadata_results:[{id:"lookup",library:"/tmp/fictional-library",book_id:1,book_uuid:"fixture",
       provider:{name:"Fixture",version:"1",identify:true,enabled:true},fetched_at:1,cached:true,match_status:"compatible",
@@ -29,7 +29,14 @@ window.__TAURI_INTERNALS__={
     if(args.action==="source_verify"){
       snapshot.data.source_reviews.source=args.payload.review;snapshot.data.references=[reference];
       Object.assign(snapshot.proposals[0],{status:"missing",reference_id:"rule",after:reference.hierarchy,changed:[0,1],blocked:false});
-    } else if(!["snapshot","scan","repair_apply"].includes(args.action))throw new Error(`Unexpected action ${args.action}`);
+    } else if(args.action==="chronology_research") {
+      snapshot.data.chronology_runs=[{id:"chronology",book_id:1,book_uuid:book.uuid,library:snapshot.data.settings.library,
+        created:1,cached:false,status:"ready",hierarchy:reference.hierarchy,field_mask:[true,true,false,false],
+        notes:["Fictional source chronology"],queries:["fixture query"],model:"",digest:"",anchors:[],evidence:[]}];
+    } else if(args.action==="repair_apply") {
+      snapshot.history=[{id:"repair",created:1,library:snapshot.data.settings.library,metadata_field:"repair",
+        kind:"apply",phase:"verified",changes:[{}],backup:"/tmp/fictional-backup",backup_coverage:"full-library",backup_verified:true,error:null}];
+    } else if(!["snapshot","scan","reverse"].includes(args.action))throw new Error(`Unexpected action ${args.action}`);
     return JSON.parse(JSON.stringify(snapshot));
   }
 };
@@ -52,6 +59,8 @@ window.__RUN_UI_TEST__=async()=>{
   set("Main series / universe","Fixture Universe");
   await click("Preview mappings");await click(verify);await click("Repair");
   assert(document.body.textContent.includes("1 supported series corrections"),"Verified source must feed Repair");
+  await click("Research chronology and subseries");await click("Confirm");
+  assert(input("Include supported research corrections")?.checked,"Research findings must enter the same Repair preview");
   const publisher=input("Fill publisher:");
   assert(publisher?.checked,"Consistent compatible metadata must be prepared without per-book approval");
   publisher.click();
@@ -62,9 +71,12 @@ window.__RUN_UI_TEST__=async()=>{
   assert(document.querySelector("dialog[open]"),"Apply must require one batch confirmation");
   await click("Confirm");
   const request=window.__UI_CALLS__.find(c=>c.action==="repair_apply")?.payload;
-  assert(request?.series.length===1&&request.fills.length===1,"One batch must combine series and missing metadata");
+  assert(request?.research[0]==="chronology"&&request.series.length===0&&request.fills.length===1,"One batch must combine research and missing metadata without duplicate series requests");
   assert(request.fills[0].publisher===false&&request.fills[0].synopsis===true,"Only selected fields may be sent");
-  assert(request.series[0].after[0].index===2&&request.series[0].after[1].index===1,"Main and nested numbers stay independent");
+  await click("History");
+  assert(document.body.textContent.includes("Verified complete library backup, including ebooks"),"History must report full backup coverage");
+  await click("Revert this batch");await click("Confirm");
+  assert(window.__UI_CALLS__.some(c=>c.action==="reverse"),"Revert must invoke guarded restoration");
   return {status:"passed",checks:["simple navigation","source verification preview","changed-preview invalidation",
-    "automatic consistent-provider preparation","field-choice persistence","one-confirmation combined repair request"]};
+    "automatic consistent-provider preparation","field-choice persistence","research-to-batch repair","verified full-backup display","guarded Revert control"]};
 };

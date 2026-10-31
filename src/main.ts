@@ -31,17 +31,22 @@ type Source = { id:string; name:string; location:string; sha256:string; kind:str
 type SourceReview={fingerprint:string;universe:string;authors:string[];aliases:Record<string,string>};
 type DocumentPreview={entries:{reference:Reference;status:string;matches:number}[];skipped:number[]};
 type ResearchRun={query:string;fetched_at:number;cached:boolean;status:string;notes:string[];leads:{url:string;title:string;engine:string}[]};
+type ChronologyRun={id:string;book_id:number;book_uuid:string;library:string;created:number;cached:boolean;status:string;
+  hierarchy:Hierarchy;field_mask:boolean[];notes:string[];queries:string[];model:string;digest:string;
+  evidence:{source_id:string;source_hash:string;fetched_at:number;finding:{order_kind:string;scope:string;primary_basis:string;
+    candidate:{title:string;notes:string;citations:Citation[];fields:{citations:Citation[]}[]};chronology_citations:Citation[]}}[];
+  anchors:{title:string;target:Hierarchy}[]};
 type Proposal = { book:Book; status:string; reason:string; reference_id:string|null;
   after:Hierarchy|null; changed:number[]; blocked:boolean; pinned:boolean[] };
 type Operation = { id:string; created:number; library:string; phase:string; kind:string;metadata_field?:string;
-  backup:string|null; error:string|null; changes:unknown[]; verification:unknown };
+  backup:string|null;backup_coverage?:string;backup_verified?:boolean; error:string|null; changes:unknown[]; verification:unknown };
 type Settings = { library:string; columns:[string,string,string]; calibre_binary:string };
 type Alias = { id:string; existing_series:string; universe:string };
 type Snapshot = { workspace:string; data:{settings:Settings; references:Reference[]; sources:Source[];aliases:Alias[];
   ai_settings:AiSettings;ai_models:{name:string;digest:string;size:number;usable:boolean;reason:string}[];
   ai_runs:AiRun[];ai_decisions:Record<string,{status:string;reference_id:string|null}>;
   metadata_settings:MetadataSettings;metadata_providers:Provider[];metadata_results:LookupResult[];synopsis_drafts:SynopsisDraft[];
-  source_reviews:Record<string,SourceReview>;research_runs:ResearchRun[];repair_notes:string[]};
+  source_reviews:Record<string,SourceReview>;research_runs:ResearchRun[];repair_notes:string[];chronology_runs:ChronologyRun[]};
   proposals:Proposal[]; history:Operation[]; issues:Record<string,string> };
 
 let state:Snapshot;
@@ -49,6 +54,7 @@ let tab="Repair", busy=false, query="", status="", page=0;
 let universeFilter:string|null=null;
 let aiSelection={source_id:"",start:1,end:1,universe:""};
 let synopsisBook=0;
+let chronologyBook=0;
 const synopsisSelected=new Set<string>();
 const selected=new Map<number,Set<number>>();
 const root=document.querySelector<HTMLDivElement>("#app")!;
@@ -217,8 +223,24 @@ function repair() {
   const missing=state.proposals.map(p=>p.book).filter(b=>!b.authors.some(a=>normalized(a)==="calibre")&&
     !(b.formats.length&&b.formats.every(f=>f==="CSV"||f==="XML"))&&(!b.has_comments||!b.publisher?.trim()||!Object.keys(b.identifiers).length));
   content.append(el("p",`${state.proposals.length} books · ${eligible.length} supported series corrections · ${missing.length} books missing synopsis, publisher or identifiers`));
-  const filter=field("Filter books (optional)"),area=el("div");
-  content.append(filter.wrapper,button("2. Find missing metadata",async()=>{
+  const filter=field("Filter books (optional)"),area=el("div"),researchBooks=el("select");
+  researchBooks.setAttribute("aria-label","Book to research");
+  const updateResearchBooks=()=>{
+    const needle=filter.input.value.toLowerCase();
+    const books=state.proposals.map(p=>p.book).filter(b=>`${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle)).slice(0,60);
+    if(!books.some(b=>b.id===chronologyBook))chronologyBook=books[0]?.id??0;
+    researchBooks.replaceChildren(...books.map(b=>{const o=el("option",`${b.title} — ${b.authors.join(" & ")}`);
+      o.value=String(b.id);o.selected=b.id===chronologyBook;return o;}));
+  };
+  researchBooks.onchange=()=>chronologyBook=Number(researchBooks.value);updateResearchBooks();
+  const researchBook=async(refresh:boolean)=>{
+    const book=state.proposals.find(p=>p.book.id===chronologyBook)?.book;if(!book)throw new Error("Choose a book.");
+    if(!await confirmAction("Research chronology and subseries?",
+      `Research "${book.title}" using its public title/authors and series hints. Up to two DuckDuckGo queries and six public pages, including relevant linked pages, will be fetched automatically. ${state.data.ai_settings.enabled?"Relevant public excerpts go to your configured local/private Ollama model.":"Local AI is disabled; explicit complete-list parsing remains available."} No library metadata is written until Apply.`))return;
+    await act("chronology_research",{book_id:book.id,refresh},"Research finished. Supported findings and unresolved evidence are below; no library changes.");
+  };
+  content.append(filter.wrapper,researchBooks,button("Research chronology and subseries",()=>researchBook(false)),
+    button("Refresh research",()=>researchBook(true)),button("2. Find missing metadata",async()=>{
     const needle=filter.input.value.toLowerCase();
     const books=missing.filter(b=>`${b.title} ${b.authors.join(" ")}`.toLowerCase().includes(needle)).slice(0,20);
     if(!books.length)throw new Error("No missing metadata in the current filter.");
@@ -228,6 +250,39 @@ function repair() {
   }),el("small","Online lookups run in batches of up to 20 books; local series matching covers the whole library."),area);
   for(const note of state.data.repair_notes)content.append(el("p",note,"warning"));
   const seriesPicks=new Set(eligible.map(p=>p.book.id));
+  const researchedBooks=new Set<number>();
+  const runs=state.data.chronology_runs.filter(r=>{
+    if(r.library!==state.data.settings.library||researchedBooks.has(r.book_id))return false;
+    researchedBooks.add(r.book_id);return true;
+  });
+  const researchPicks=new Set<string>();
+  const researchBox=el("section");researchBox.append(el("h2","Automated chronology findings"));
+  for(const run of runs) {
+    const p=state.proposals.find(p=>p.book.uuid===run.book_uuid);if(!p)continue;
+    const card=el("details");card.open=true;
+    card.append(el("summary",`${p.book.title} · ${run.status}${run.cached?" · cached":""}`),
+      el("p",run.model?`Local model: ${run.model}`:"Deterministic source parsing"),
+      el("small",new Date(run.created*1000).toLocaleString()));
+    for(const note of run.notes)card.append(el("p",note,"warning"));
+    const alreadyReviewed=state.data.references.some(r=>r.approved&&(r as Reference&{research_run_id?:string}).research_run_id===run.id);
+    const change=run.field_mask.some((v,i)=>v&&!p.pinned[i]&&JSON.stringify(run.hierarchy[i])!==JSON.stringify(p.book.hierarchy[i]));
+    if(run.status==="ready"&&change&&!alreadyReviewed) {
+      researchPicks.add(run.id);
+      card.append(checkbox("Include supported research corrections in this batch",true,v=>{
+        if(v)researchPicks.add(run.id);else researchPicks.delete(run.id);
+      }),hierarchy(run.hierarchy.map((v,i)=>!run.field_mask[i]||p.pinned[i]?p.book.hierarchy[i]:v) as Hierarchy));
+    } else if(alreadyReviewed)card.append(el("p","Already reviewed; saved corrections are included in the normal series preview."));
+    else if(run.status==="ready")card.append(el("p","No unlocked changes: values already match or are protected."));
+    for(const evidence of run.evidence) {
+      const f=evidence.finding,source=state.data.sources.find(s=>s.id===evidence.source_id);
+      card.append(el("p",`${f.order_kind} · scope: ${f.scope} · basis: ${f.primary_basis}`),el("p",f.candidate.notes),
+        el("small",`${source?.location??"Source unavailable"} · fetched ${new Date(evidence.fetched_at*1000).toLocaleString()}`),
+        inspectEvidence([...f.candidate.citations,...f.chronology_citations,...f.candidate.fields.flatMap(v=>v.citations)],source));
+    }
+    for(const anchor of run.anchors)card.append(el("p",`Reviewed anchor: ${anchor.title} · ${series(anchor.target[0])}`));
+    researchBox.append(card);
+  }
+  if(runs.length)content.append(researchBox);
   type Fill={lookup_id:string;book:Book;synopsis:boolean;publisher:boolean;identifiers:boolean};
   const fills=new Map<number,Fill>();
   const excludedFills=new Set<number>();
@@ -289,17 +344,18 @@ function repair() {
       if(choices.value)show();
     }
   }
-  filter.input.oninput=rows;rows();
+  filter.input.oninput=()=>{updateResearchBooks();rows();};rows();
   content.append(button("Apply selected fixes",async()=>{
-    const changes=eligible.filter(p=>seriesPicks.has(p.book.id)).map(p=>({
+    const research=runs.filter(r=>researchPicks.has(r.id));
+    const changes=eligible.filter(p=>seriesPicks.has(p.book.id)&&!research.some(r=>r.book_id===p.book.id)).map(p=>({
       id:p.book.id,uuid:p.book.uuid,title:p.book.title,before:p.book.hierarchy,
       after:p.after!.map((v,i)=>p.pinned[i]?p.book.hierarchy[i]:v),evidence:"",sources:[],authors:p.book.authors,identifiers:p.book.identifiers
     }));
     const chosen=[...fills.values()].filter(f=>f.synopsis||f.publisher||f.identifiers);
-    if(!changes.length&&!chosen.length)throw new Error("No fixes selected.");
-    if(!await confirmAction(`Apply ${changes.length} series corrections and ${chosen.length} metadata fills?`,
-      `Library: ${state.data.settings.library}. Confirm the displayed source matches and editions, and close Calibre first. Only selected fixes are written. This batch has one backup, verification journal and guarded undo in History. Interrupted writes require guarded recovery.`))return;
-    await act("repair_apply",{series:changes,fills:chosen},"Selected fixes applied and verified. The batch backup and guarded undo are in History.");
+    if(!changes.length&&!chosen.length&&!research.length)throw new Error("No fixes selected.");
+    if(!await confirmAction(`Apply ${changes.length+research.length} series corrections and ${chosen.length} metadata fills?`,
+      `Library: ${state.data.settings.library}. Confirm the displayed research findings, source matches and editions, and close Calibre first. A verified FULL library backup, including all ebook files, must complete before any change. This can take time and requires enough free space. Only selected fixes are written; use History → Revert this batch to restore edited fields.`))return;
+    await act("repair_apply",{series:changes,fills:chosen,research:research.map(r=>r.id)},"Selected fixes applied and verified. The full-library backup and Revert option are in History.");
   },"primary"));
   const held=el("details");held.append(el("summary","Items needing attention"));
   for(const p of state.proposals.filter(p=>p.blocked&&`${p.book.title} ${p.book.authors.join(" ")}`.toLowerCase().includes(filter.input.value.toLowerCase())).slice(0,200))
@@ -579,16 +635,19 @@ function history() {
     const card=el("section","","card");
     card.append(el("h2",`${op.metadata_field??"series"} · ${op.kind} · ${op.phase} · ${op.changes.length} books`),
       el("p",`${new Date(op.created*1000).toLocaleString()} · ${op.library}`),el("small",op.id),
-      el("p",`Backup: ${op.backup??"not created"}`));
+      el("p",`Backup: ${op.backup??"not created"}`),
+      el("p",op.backup_coverage==="full-library"&&op.backup_verified?
+        "Verified complete library backup, including ebooks. Snapshot: "+op.backup+"/library":
+        op.backup?"Older metadata-only backup; not a complete library copy.":"No verified backup yet; writes must wait for a complete backup."));
     if(op.error)card.append(el("p",op.error,"error"));
     const details=el("details");details.append(el("summary","Journal / verification"));
     const json=el("pre",JSON.stringify(op,null,2));details.append(json);card.append(details);
-    if(!["rejected","undone","recovered"].includes(op.phase))card.append(button(op.phase==="verified"?"Guarded undo":"Recover interrupted operation",async()=>{
-      if(await confirmAction("Guarded reversal?","Close Calibre. All targets must still match the saved checkpoint. Protected fields remain protected; explicitly unlock only if you intend to reverse newly protected membership.")) {
+    if(!["rejected","undone","recovered"].includes(op.phase))card.append(button(op.phase==="verified"?"Revert this batch":"Recover interrupted operation",async()=>{
+      if(await confirmAction("Revert this batch?","Close Calibre. Original edited metadata will be restored through Calibre, not by overwriting ebook files. A verified full-library backup is required before reversal. Intervening edits and protected fields can block it; the original snapshot is retained.")) {
         await act("reverse",{id:op.id},"Guarded reversal applied and verified.");
       }
     }));
-    if(!op.backup&&["prepared","locked"].includes(op.phase))card.append(button("Dismiss pre-write failure",()=>act("dismiss",{id:op.id})));
+    if(!op.backup&&["prepared","locked","backing_up"].includes(op.phase))card.append(button("Dismiss pre-write failure",()=>act("dismiss",{id:op.id})));
     content.append(card);
   }
   if(!state.history.length)content.append(el("p","No writes performed by this application."));
@@ -911,7 +970,7 @@ async function start() {
     await listen<string>("curator-progress",event=>{
       try {
         const update=JSON.parse(event.payload) as {phase:string;completed:number;total:number};
-        if(busy)message(`Calibre: ${update.phase} · ${update.completed}/${update.total} books. Keep this window open.`);
+        if(busy)message(`Calibre: ${update.phase} · ${update.completed}/${update.total} items. Keep this window open.`);
       }catch{/* Plugin output cannot become executable UI content. */}
     });
     state=await invoke<Snapshot>("dispatch",{action:"snapshot",payload:{}});

@@ -75,6 +75,12 @@ async fn dispatch(
             };
             match action.as_str() {
                 "snapshot" => {}
+                "chronology_research" => app
+                    .research_book(
+                        payload["book_id"].as_i64().ok_or("Choose a book")?,
+                        payload["refresh"].as_bool().unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())?,
                 "repair_prepare" => app
                     .prepare_missing(
                         &serde_json::from_value::<Vec<i64>>(payload.clone())

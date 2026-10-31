@@ -1,6 +1,7 @@
 pub mod ai;
 mod ai_app;
 pub mod app;
+pub mod chronology;
 pub mod documents;
 pub mod library;
 pub mod matching;
